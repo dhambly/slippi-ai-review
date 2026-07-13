@@ -183,7 +183,11 @@ def projected_stage_seconds(summary: dict[str, Any], actual_seconds: float, proj
     return fixed + variable * projected_lanes / actual_lanes
 
 
-def evaluate_job(summary_path: Path, random_trials: int) -> list[dict[str, Any]]:
+def evaluate_job(
+    summary_path: Path,
+    random_trials: int,
+    game_metadata: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
     job = read_json(summary_path)
     run_root = summary_path.parent
     game_root = run_root.parents[1]
@@ -246,6 +250,8 @@ def evaluate_job(summary_path: Path, random_trials: int) -> list[dict[str, Any]]
                 )
                 output.append({
                     "game": job["game"],
+                    "matchup": game_metadata.get(job["game"], {}).get("matchup"),
+                    "stage": game_metadata.get(job["game"], {}).get("stage"),
                     "replicate": int(job["replicate"]),
                     "mode": mode,
                     "trial": trial,
@@ -368,11 +374,14 @@ def main() -> int:
     benchmark = args.benchmark.resolve()
     out = (args.out or benchmark / "evaluation").resolve()
     out.mkdir(parents=True, exist_ok=True)
+    manifest_path = benchmark / "manifest.json"
+    manifest = read_json(manifest_path) if manifest_path.is_file() else {"games": []}
+    game_metadata = {str(game["id"]): game for game in manifest.get("games") or []}
     detail = []
     summaries = sorted(benchmark.glob("games/*/replicates/*/job_summary.json"))
     for summary in summaries:
         if read_json(summary).get("status") == "complete":
-            detail.extend(evaluate_job(summary, args.random_trials))
+            detail.extend(evaluate_job(summary, args.random_trials, game_metadata))
     aggregate_rows = aggregate(detail)
     replicate_rows = cross_replicate(benchmark)
     (out / "virtual_budget_results.jsonl").write_text(

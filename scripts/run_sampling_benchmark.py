@@ -43,7 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--hours", type=float, default=5.0)
-    parser.add_argument("--max-replicates", type=int, default=3)
+    parser.add_argument(
+        "--max-replicates",
+        type=int,
+        default=100,
+        help="Safety cap; the wall-clock deadline normally stops the replicate loop first.",
+    )
     parser.add_argument("--preflight-samples", type=int, default=REFERENCE_PREFLIGHT_SAMPLES)
     parser.add_argument("--refinement-samples", type=int, default=REFERENCE_REFINEMENT_SAMPLES)
     parser.add_argument("--max-batch-lanes", type=int, default=4096)
