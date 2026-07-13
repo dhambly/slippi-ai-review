@@ -1,0 +1,99 @@
+diff --git a/tools/slippi/validation_buffer_builder.py b/tools/slippi/validation_buffer_builder.py
+--- a/tools/slippi/validation_buffer_builder.py
++++ b/tools/slippi/validation_buffer_builder.py
+@@ -270,1 +270,8 @@
+-    frame_pre_random_seed = _to_numpy(frames.field('start').field('random_seed')).astype(np.uint32)
++    try:
++        frame_pre_random_seed = _to_numpy(frames.field('start').field('random_seed')).astype(np.uint32)
++    except KeyError:
++        # Slippi 2.x predates FRAME_START, but records the same per-frame RNG
++        # seed in each player's pre-frame update.
++        frame_pre_random_seed = _to_numpy(
++            frames.field('ports').field(src_port_names[0]).field('leader').field('pre').field('random_seed')
++        ).astype(np.uint32)
+@@ -564,1 +571,6 @@
+-        pre_main_y = _to_numpy(pre.field('raw_analog_y')).astype(np.int8)
++        if pre.type.get_field_index('raw_analog_y') != -1:
++            pre_main_y = _to_numpy(pre.field('raw_analog_y')).astype(np.int8)
++        else:
++            pre_main_y = _stick_i8_from_unit_stick(
++                _to_numpy(pre.field('joystick').field('y')).astype(np.float32)
++            )
+@@ -608,16 +620,44 @@
+-        post_hitlag = _u16_from_float_frames(_to_numpy(post.field('hitlag')).astype(np.float32), n_frames)
+-        post_hitlag_u16_all[:, slot] = post_hitlag
+         post_misc_as = _to_numpy(post.field('misc_as')).astype(np.float32)
+         post_state_age_f32 = _to_numpy(post.field('state_age')).astype(np.float32)
+         post_state_age = _i16_from_state_age(post_state_age_f32, n_frames)
+         post_state_age_all[:, slot] = post_state_age
+         post_anim_frame_f32 = _f32_from_state_age(post_state_age_f32, n_frames)
+         post_anim_frame_f32_all[:, slot] = post_anim_frame_f32
+-        hurtbox_state = _to_numpy(post.field('hurtbox_state')).astype(np.uint8)
++        if post.type.get_field_index('hitlag') != -1:
++            post_hitlag = _u16_from_float_frames(_to_numpy(post.field('hitlag')).astype(np.float32), n_frames)
++        else:
++            # Legacy Slippi does not expose hitlag directly. Action age freezes
++            # during hitlag, so reconstruct the remaining frozen frames.
++            post_hitlag = np.zeros(n_frames, dtype=np.uint16)
++            remaining = 0
++            for frame_index in range(n_frames - 2, -1, -1):
++                if post_state[frame_index] == post_state[frame_index + 1] and post_state_age[frame_index] == post_state_age[frame_index + 1]:
++                    remaining += 1
++                    post_hitlag[frame_index] = np.uint16(min(remaining, 65535))
++                else:
++                    remaining = 0
++        post_hitlag_u16_all[:, slot] = post_hitlag
++        hurtbox_state = (
++            _to_numpy(post.field('hurtbox_state')).astype(np.uint8)
++            if post.type.get_field_index('hurtbox_state') != -1
++            else np.zeros(n_frames, dtype=np.uint8)
++        )
+         l_cancel = _to_numpy(post.field('l_cancel')).astype(np.uint8)
+         ground_id = _to_numpy(post.field('ground')).astype(np.uint16)
+-        animation_index = _to_numpy(post.field('animation_index')).astype(np.uint32)
++        animation_index = (
++            _to_numpy(post.field('animation_index')).astype(np.uint32)
++            if post.type.get_field_index('animation_index') != -1
++            else post_state.astype(np.uint32)
++        )
+         post_animation_index_u32_all[:, slot] = animation_index
+-        instance_hit_by = _to_numpy(post.field('last_hit_by_instance')).astype(np.uint16)
++        instance_hit_by = (
++            _to_numpy(post.field('last_hit_by_instance')).astype(np.uint16)
++            if post.type.get_field_index('last_hit_by_instance') != -1
++            else np.zeros(n_frames, dtype=np.uint16)
++        )
+         post_instance_hit_by_u16_all[:, slot] = instance_hit_by
+-        instance_id = _to_numpy(post.field('instance_id')).astype(np.uint16)
++        instance_id = (
++            _to_numpy(post.field('instance_id')).astype(np.uint16)
++            if post.type.get_field_index('instance_id') != -1
++            else np.zeros(n_frames, dtype=np.uint16)
++        )
+@@ -633,7 +673,19 @@
+-        vel = post.field('velocities')
+-        speed_air_x_self = _to_numpy(vel.field('self_x_air')).astype(np.float32)
+-        speed_y_self = _to_numpy(vel.field('self_y')).astype(np.float32)
+-        speed_x_attack = _to_numpy(vel.field('knockback_x')).astype(np.float32)
+-        speed_y_attack = _to_numpy(vel.field('knockback_y')).astype(np.float32)
+-        speed_ground_x_self = _to_numpy(vel.field('self_x_ground')).astype(np.float32)
+-        post_instance_id_slot = _to_numpy(post.field('instance_id')).astype(np.uint16)
++        if post.type.get_field_index('velocities') != -1:
++            vel = post.field('velocities')
++            speed_air_x_self = _to_numpy(vel.field('self_x_air')).astype(np.float32)
++            speed_y_self = _to_numpy(vel.field('self_y')).astype(np.float32)
++            speed_x_attack = _to_numpy(vel.field('knockback_x')).astype(np.float32)
++            speed_y_attack = _to_numpy(vel.field('knockback_y')).astype(np.float32)
++            speed_ground_x_self = _to_numpy(vel.field('self_x_ground')).astype(np.float32)
++        else:
++            # Split observed position deltas between self movement and
++            # knockback using the replay's hitstun state.
++            delta_x = np.diff(post_pos_x, prepend=post_pos_x[0]).astype(np.float32)
++            delta_y = np.diff(post_pos_y, prepend=post_pos_y[0]).astype(np.float32)
++            in_hitstun = post_hitstun > 0
++            speed_x_attack = np.where(in_hitstun, delta_x, 0.0).astype(np.float32)
++            speed_y_attack = np.where(in_hitstun, delta_y, 0.0).astype(np.float32)
++            speed_air_x_self = np.where((post_on_ground == 0) & ~in_hitstun, delta_x, 0.0).astype(np.float32)
++            speed_ground_x_self = np.where((post_on_ground != 0) & ~in_hitstun, delta_x, 0.0).astype(np.float32)
++            speed_y_self = np.where(~in_hitstun, delta_y, 0.0).astype(np.float32)
++        post_instance_id_slot = instance_id

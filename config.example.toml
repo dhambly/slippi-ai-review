@@ -1,0 +1,17 @@
+[paths]
+data_dir = "./data"
+model = "D:/models/gm-v2"
+msl_root = "D:/code/melee-sim-light-dev"
+slippi_ai_root = "D:/code/slippi-ai"
+melee_iso = "C:/Melee/melee.iso"
+
+[wsl]
+micromamba = "/home/USER/.local/bin/micromamba"
+environment = "/home/USER/.local/envs/msl-gpu"
+cuda_library_path = "/usr/lib/wsl/lib"
+
+[training_mode]
+tm_replay = "D:/code/tm_replay/target/release/tm_replay.exe"
+ce_iso = "C:/Melee/Training-Mode-CE.iso"
+dolphin = "C:/path/to/Slippi Dolphin.exe"
+dolphin_user_dir = "C:/Users/USER/AppData/Roaming/Slippi Launcher/netplay/User"

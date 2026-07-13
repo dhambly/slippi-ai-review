@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root { color-scheme:dark; --ink:#e8ece9; --muted:#9ba59f; --line:#39413c; --green:#65d69a; --p1:#ef7185; --p2:#47b6d6; }
+    * { box-sizing:border-box; }
+    html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#101417; font:13px/1.3 Segoe UI,Arial,sans-serif; letter-spacing:0; }
+    .app { display:grid; grid-template-rows:minmax(0,1fr) 96px; width:100%; height:100%; }
+    .views { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:2px; min-height:0; }
+    .pane { position:relative; min-width:0; min-height:0; overflow:hidden; background:#f8fafc; }
+    .pane iframe { display:block; width:100%; height:100%; border:0; }
+    .label { position:absolute; z-index:2; top:8px; left:8px; padding:4px 7px; color:#fff; background:rgba(23,32,38,.82); border-radius:3px; font:700 12px/1.2 ui-monospace,Consolas,monospace; }
+    .controls { display:grid; grid-template-columns:auto auto auto minmax(180px,1fr) auto auto auto auto; gap:7px; align-items:center; padding:6px 10px; color:var(--ink); background:#171a18; border-top:1px solid var(--line); }
+    button,select { height:32px; border:1px solid #58615b; border-radius:4px; color:var(--ink); background:#242925; }
+    button { min-width:36px; padding:0 9px; cursor:pointer; font-weight:700; }
+    button:hover,button:focus { border-color:var(--green); outline:none; }
+    input[type=range] { width:100%; margin:0; accent-color:var(--green); }
+    .timeline { position:relative; display:grid; grid-template-rows:25px 25px 22px; gap:1px; min-width:0; align-self:stretch; }
+    .timeline-lane,.seek-row { display:grid; grid-template-columns:43px minmax(0,1fr); gap:6px; align-items:center; min-width:0; }
+    .lane-name { overflow:hidden; color:var(--muted); font:700 9px/1 ui-monospace,Consolas,monospace; text-align:right; text-transform:uppercase; }
+    .lane-track { position:relative; height:22px; overflow:hidden; border:1px solid #343b37; border-radius:3px; background:#202421; }
+    .lane-track::after { content:""; position:absolute; z-index:1; top:50%; right:0; left:0; border-top:1px solid #3b433e; pointer-events:none; }
+    .lane-track.agent { background:linear-gradient(to right,#191c1a 0 var(--switch-pct),#202421 var(--switch-pct) 100%); }
+    .pre-takeover { position:absolute; inset:0 auto 0 0; width:var(--switch-pct); display:grid; place-items:center; overflow:hidden; color:#667069; font:700 8px/1 ui-monospace,Consolas,monospace; }
+    .takeover-line { position:absolute; z-index:3; top:0; bottom:0; left:var(--switch-pct); width:2px; background:#aeb8b2; pointer-events:none; }
+    .move-event { position:absolute; z-index:2; width:8px; height:8px; translate:-50% 0; padding:0; border:1px solid rgba(255,255,255,.7); border-radius:50%; cursor:pointer; opacity:.94; }
+    .move-event[data-player="0"] { top:1px; background:var(--p1); }
+    .move-event[data-player="1"] { bottom:1px; background:var(--p2); }
+    .move-event[data-source="replay-prefix"] { opacity:.78; }
+    .move-event:hover,.move-event:focus { z-index:4; outline:2px solid #fff; opacity:1; }
+    .timeline-tooltip { position:fixed; z-index:20; display:none; max-width:min(310px,calc(100vw - 16px)); padding:6px 8px; border-radius:4px; color:#fff; background:rgba(18,25,29,.96); box-shadow:0 2px 8px rgba(0,0,0,.28); font:11px/1.35 Segoe UI,Arial,sans-serif; pointer-events:none; }
+    .timeline-tooltip.visible { display:block; }
+    .timeline-key { display:flex; align-items:center; justify-content:flex-end; gap:5px; overflow:hidden; color:var(--muted); font:8px/1 ui-monospace,Consolas,monospace; }
+    .key-dot { width:6px; height:6px; border-radius:1px; background:var(--p1); }
+    .key-dot.p2 { background:var(--p2); }
+    .frame { min-width:105px; text-align:right; font:700 12px/1 ui-monospace,Consolas,monospace; }
+    .error { position:absolute; z-index:4; inset:0; display:grid; place-items:center; padding:20px; color:#fff; background:#712b2b; text-align:center; }
+    @media(max-width:620px) {
+      .app { grid-template-rows:minmax(0,1fr) 126px; }
+      .controls { grid-template-columns:auto auto auto minmax(0,1fr) auto auto; grid-template-rows:32px minmax(0,1fr); padding:5px 7px; }
+      #reset { grid-column:1; grid-row:1; }
+      #step-back { grid-column:2; grid-row:1; }
+      #play { grid-column:3; grid-row:1; }
+      #frame { grid-column:4; grid-row:1; }
+      #step-forward { grid-column:5; grid-row:1; }
+      #fullscreen { grid-column:6; grid-row:1; }
+      .timeline { grid-column:1/-1; grid-row:2; }
+      .frame { min-width:0; font-size:10px; }
+      select { display:none; }
+      .timeline-lane,.seek-row { grid-template-columns:37px minmax(0,1fr); gap:4px; }
+      .lane-name { font-size:8px; }
+      .move-event { width:7px; height:7px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="views">
+      <section class="pane"><span class="label">Replay</span><iframe id="left" title="Replay visualization"></iframe></section>
+      <section class="pane"><span id="right-label" class="label">Replay</span><iframe id="right" title="Counterfactual visualization"></iframe></section>
+    </div>
+    <div class="controls">
+      <button id="reset" type="button" title="Reset" aria-label="Reset">|&lt;</button>
+      <button id="step-back" type="button" title="Previous frame" aria-label="Previous frame">-1</button>
+      <button id="play" type="button" title="Play or pause">Play</button>
+      <div id="timeline" class="timeline" aria-label="Move-event timeline">
+        <div class="timeline-lane"><span class="lane-name">Replay</span><div id="replay-events" class="lane-track" aria-label="Replay move events"></div></div>
+        <div class="timeline-lane"><span class="lane-name">MSL</span><div id="agent-events" class="lane-track agent" aria-label="MSL move events"><span class="pre-takeover">REPLAY</span><span class="takeover-line"></span></div></div>
+        <div class="seek-row"><span class="timeline-key"><i class="key-dot"></i>P1 <i class="key-dot p2"></i>P2</span><input id="seek" type="range" min="0" value="0" step="1" aria-label="Frame"></div>
+        <div id="timeline-tooltip" class="timeline-tooltip" role="tooltip"></div>
+      </div>
+      <span id="frame" class="frame"></span>
+      <select id="speed" aria-label="Playback speed"><option value="0.25">0.25x</option><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option></select>
+      <button id="step-forward" type="button" title="Next frame" aria-label="Next frame">+1</button>
+      <button id="fullscreen" type="button" title="Fullscreen" aria-label="Fullscreen">[ ]</button>
+    </div>
+  </div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const replay = params.get("replay");
+    const agent = params.get("agent");
+    const eventMetadataUrl = params.get("events");
+    const switchFrame = Number(params.get("switch") || 0);
+    const defenderSwitch = Number(params.get("defenderSwitch") || switchFrame);
+    const startFrame = Number(params.get("start") || 0);
+    const frameCount = Math.max(1, Number(params.get("frames") || 1));
+    const left = document.querySelector("#left");
+    const right = document.querySelector("#right");
+    const rightLabel = document.querySelector("#right-label");
+    const seek = document.querySelector("#seek");
+    const frameLabel = document.querySelector("#frame");
+    const playButton = document.querySelector("#play");
+    const speed = document.querySelector("#speed");
+    const timeline = document.querySelector("#timeline");
+    const replayEvents = document.querySelector("#replay-events");
+    const agentEvents = document.querySelector("#agent-events");
+    const timelineTooltip = document.querySelector("#timeline-tooltip");
+    let frame = 0;
+    let playing = false;
+    let ready = 0;
+    let lastTick = null;
+    let accumulator = 0;
+
+    const characterNames = ["Mario","Fox","Captain Falcon","Donkey Kong","Kirby","Bowser","Link","Sheik","Ness","Peach","Popo","Nana","Pikachu","Samus","Yoshi","Jigglypuff","Mewtwo","Luigi","Marth","Zelda","Young Link","Dr. Mario","Falco","Pichu","Mr. Game & Watch","Ganondorf","Roy"];
+    const actionNames = new Map([
+      [44,"Jab"],[45,"Jab 2"],[46,"Jab 3"],[47,"Rapid jab"],[48,"Rapid jab"],[49,"Rapid jab"],[50,"Dash attack"],
+      [51,"F-tilt"],[52,"F-tilt"],[53,"F-tilt"],[54,"F-tilt"],[55,"F-tilt"],[56,"Up tilt"],[57,"Down tilt"],
+      [58,"F-smash"],[59,"F-smash"],[60,"F-smash"],[61,"F-smash"],[62,"F-smash"],[63,"Up smash"],[64,"Down smash"],
+      [65,"Nair"],[66,"Fair"],[67,"Bair"],[68,"Uair"],[69,"Dair"],
+      [212,"Grab"],[214,"Dash grab"],[217,"Pummel"],[219,"Forward throw"],[220,"Back throw"],[221,"Up throw"],[222,"Down throw"],
+      [256,"Ledge attack"],[257,"Ledge attack"]
+    ]);
+    const foxSpecials = new Map([[369,"Laser"],[370,"Laser"],[371,"Laser"],[372,"Laser"],[373,"Laser"],[374,"Laser"],[375,"Laser"],[376,"Laser"],[377,"Laser"],[378,"Laser"],[379,"Side-B"],[380,"Side-B"],[381,"Up-B"],[382,"Up-B"],[383,"Shine"],[384,"Shine"],[385,"Shine"]]);
+    const sheikSpecials = new Map([[341,"Needles"],[342,"Needles"],[343,"Needles"],[344,"Needles"],[345,"Needles"],[346,"Needles"],[347,"Needles"],[348,"Needles"],[349,"Side-B"],[350,"Side-B"],[351,"Side-B"],[352,"Side-B"],[353,"Side-B"],[354,"Side-B"],[355,"Up-B"],[356,"Up-B"],[357,"Up-B"],[358,"Up-B"],[359,"Up-B"],[360,"Up-B"],[361,"Down-B"],[362,"Down-B"],[363,"Down-B"],[364,"Down-B"]]);
+
+    const childBase = new URL("frame.html", location.href);
+    const leftUrl = new URL(childBase);
+    leftUrl.searchParams.set("role", "left");
+    leftUrl.searchParams.set("replay", replay);
+    const rightUrl = new URL(childBase);
+    rightUrl.searchParams.set("role", "right");
+    rightUrl.searchParams.set("replay", replay);
+    rightUrl.searchParams.set("agent", agent);
+    rightUrl.searchParams.set("switch", switchFrame);
+    left.src = leftUrl;
+    right.src = rightUrl;
+    seek.max = String(frameCount - 1);
+    timeline.style.setProperty("--switch-pct", `${Math.max(0, Math.min(100, switchFrame / Math.max(1, frameCount - 1) * 100))}%`);
+
+    function actionName(actionId, charId) {
+      if (charId === 1 && foxSpecials.has(actionId)) return foxSpecials.get(actionId);
+      if (charId === 7 && sheikSpecials.has(actionId)) return sheikSpecials.get(actionId);
+      if (actionNames.has(actionId)) return actionNames.get(actionId);
+      return null;
+    }
+
+    function actionKind(actionId) {
+      return "attack";
+    }
+
+    function traceEvents(trace) {
+      const fields = trace.frames?.playerFields || [];
+      const actionIndex = fields.indexOf("actionId");
+      const charIndex = fields.indexOf("charId");
+      if (actionIndex < 0 || charIndex < 0) return [];
+      const states = [];
+      const active = [];
+      const events = [];
+      for (const row of trace.frames?.rows || []) {
+        const traceFrame = Number(row[1]);
+        const players = row[3] || [];
+        players.forEach((entry, player) => {
+          if (!entry) return;
+          if (row[0] === 0) states[player] = entry.slice();
+          else {
+            states[player] ||= [];
+            entry.forEach(([field, value]) => { states[player][field] = value; });
+          }
+          const actionId = Number(states[player][actionIndex]);
+          const charId = Number(states[player][charIndex]);
+          if (active[player]?.actionId === actionId) return;
+          if (active[player]) active[player].end = traceFrame;
+          const event = { player, actionId, charId, start:traceFrame, end:traceFrame + 1, kind:actionKind(actionId) };
+          events.push(event);
+          active[player] = event;
+        });
+      }
+      active.forEach(event => { if (event) event.end = Number(trace.frames?.rows?.at(-1)?.[1] ?? event.start) + 1; });
+      return events.filter(event => actionName(event.actionId, event.charId));
+    }
+
+    /*
+      Optional `events=<url>` sidecar schema (all frames are relative to this comparison):
+      {
+        "schemaVersion": 1,
+        "lanes": {
+          "replay": [{"frame":60,"endFrame":74,"name":"Nair","player":0,"kind":"attack","character":"Fox"}],
+          "msl":    [{"frame":60,"duration":9,"name":"Up smash","player":0,"kind":"attack","character":"Fox"}]
+        }
+      }
+      `player` is zero-based. `endFrame` is exclusive; `duration` may be supplied instead.
+      `kind` is normally attack, movement, or defense. Unknown kinds remain valid.
+    */
+    function normalizedLane(payload, lane) {
+      const source = payload?.lanes?.[lane] ?? payload?.[lane];
+      if (!Array.isArray(source)) return null;
+      return source.flatMap(item => {
+        const start = Number(item?.frame ?? item?.startFrame);
+        const duration = Number(item?.duration);
+        const end = Number(item?.endFrame ?? (Number.isFinite(duration) ? start + duration : start + 1));
+        const player = Number(item?.player);
+        const name = String(item?.name ?? "").trim();
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || !name || !Number.isInteger(player) || player < 0 || player > 1) return [];
+        return [{
+          start,
+          end,
+          player,
+          name,
+          kind:String(item.kind || "attack").toLowerCase(),
+          character:String(item.character || "").trim(),
+          actionId:Number.isFinite(Number(item.actionId)) ? Number(item.actionId) : null,
+        }];
+      });
+    }
+
+    function hideTooltip() { timelineTooltip.classList.remove("visible"); }
+
+    function showTooltip(event, marker) {
+      timelineTooltip.textContent = marker.dataset.tooltip;
+      timelineTooltip.classList.add("visible");
+      const bounds = timelineTooltip.getBoundingClientRect();
+      const x = Math.max(8 + bounds.width / 2, Math.min(innerWidth - 8 - bounds.width / 2, event.clientX));
+      const y = Math.max(8, event.clientY - bounds.height - 10);
+      timelineTooltip.style.left = `${x - bounds.width / 2}px`;
+      timelineTooltip.style.top = `${y}px`;
+    }
+
+    function renderEvents(container, events, frameOffset, laneName, source, beforeFrame = null) {
+      events.forEach(event => {
+        const start = Math.max(0, frameOffset + event.start);
+        const end = Math.min(frameCount, frameOffset + event.end);
+        if (end <= start || (beforeFrame != null && start >= beforeFrame)) return;
+        const name = event.name || actionName(event.actionId, event.charId);
+        const marker = document.createElement("span");
+        const absolute = startFrame + start;
+        const duration = Math.max(1, end - start);
+        const character = event.character || characterNames[event.charId] || `Player ${event.player + 1}`;
+        marker.className = "move-event";
+        marker.setAttribute("role", "button");
+        marker.tabIndex = 0;
+        marker.dataset.player = String(event.player);
+        marker.dataset.kind = event.kind || "attack";
+        marker.dataset.source = source;
+        marker.dataset.frame = String(start);
+        marker.dataset.tooltip = `${laneName} | P${event.player + 1} ${character} | ${name} | ${marker.dataset.kind} | f${absolute} | ${duration}f`;
+        marker.title = marker.dataset.tooltip;
+        marker.setAttribute("aria-label", marker.dataset.tooltip);
+        marker.style.left = `${start / frameCount * 100}%`;
+        marker.addEventListener("click", () => { setPlaying(false); setFrame(start); });
+        marker.addEventListener("keydown", event => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          setPlaying(false);
+          setFrame(start);
+        });
+        marker.addEventListener("pointerenter", pointer => showTooltip(pointer, marker));
+        marker.addEventListener("pointermove", pointer => showTooltip(pointer, marker));
+        marker.addEventListener("pointerleave", hideTooltip);
+        marker.addEventListener("focus", () => {
+          const bounds = marker.getBoundingClientRect();
+          showTooltip({ clientX:bounds.left + bounds.width / 2, clientY:bounds.top }, marker);
+        });
+        marker.addEventListener("blur", hideTooltip);
+        container.append(marker);
+      });
+    }
+
+    async function buildTimeline() {
+      try {
+        let metadata = null;
+        if (eventMetadataUrl) {
+          try {
+            const response = await fetch(eventMetadataUrl);
+            if (!response.ok) throw new Error(`${response.status} loading event metadata`);
+            metadata = await response.json();
+          } catch (error) {
+            console.warn(`Event metadata unavailable; deriving timeline from traces: ${error.message}`);
+          }
+        }
+        const metadataReplay = normalizedLane(metadata, "replay");
+        const metadataAgent = normalizedLane(metadata, "msl");
+        const needReplayTrace = metadataReplay == null;
+        const needAgentTrace = metadataAgent == null;
+        const [replayTrace, agentTrace] = await Promise.all([
+          needReplayTrace ? replay : null,
+          needAgentTrace ? agent : null,
+        ].map(async url => {
+          if (!url) return null;
+          const response = await fetch(url);
+          if (!response.ok) throw new Error(`${response.status} loading timeline trace`);
+          return response.json();
+        }));
+        const replayLane = metadataReplay != null ? metadataReplay : replayTrace ? traceEvents(replayTrace) : [];
+        const agentOffset = metadataAgent != null ? 0 : switchFrame;
+        const rawAgentLane = metadataAgent != null ? metadataAgent : agentTrace ? traceEvents(agentTrace) : [];
+        const agentLane = rawAgentLane.filter(event => {
+          const start = agentOffset + event.start;
+          if (start !== switchFrame) return true;
+          return !replayLane.some(replayEvent => (
+            replayEvent.player === event.player
+            && replayEvent.start < switchFrame
+            && replayEvent.end > switchFrame
+            && (
+              replayEvent.actionId != null && event.actionId != null
+                ? replayEvent.actionId === event.actionId
+                : (replayEvent.name || actionName(replayEvent.actionId, replayEvent.charId)) === (event.name || actionName(event.actionId, event.charId))
+            )
+          ));
+        });
+        renderEvents(replayEvents, replayLane, 0, "Replay", "replay");
+        renderEvents(agentEvents, replayLane, 0, "Replay before takeover", "replay-prefix", switchFrame);
+        renderEvents(agentEvents, agentLane, agentOffset, "MSL", "msl");
+        document.documentElement.dataset.timelineReady = "true";
+        document.documentElement.dataset.timelineSource = metadataReplay != null && metadataAgent != null ? "metadata" : metadata ? "mixed" : "trace";
+        document.documentElement.dataset.replayEventCount = String(replayEvents.querySelectorAll(".move-event").length);
+        document.documentElement.dataset.agentEventCount = String(agentEvents.querySelectorAll('.move-event[data-source="msl"]').length);
+      } catch (error) {
+        document.documentElement.dataset.timelineError = error.message;
+        console.error(`Timeline failed: ${error.message}`);
+      }
+    }
+
+    function postFrame() {
+      const message = { type: "set-frame", frame };
+      left.contentWindow?.postMessage(message, "*");
+      right.contentWindow?.postMessage(message, "*");
+      seek.value = String(frame);
+      const absolute = startFrame + frame;
+      frameLabel.textContent = `f${absolute} | ${frame + 1}/${frameCount}`;
+      rightLabel.textContent = frame < switchFrame ? "Replay" : frame < defenderSwitch ? "MSL attacker" : "Both MSL";
+    }
+
+    function setFrame(value) {
+      frame = Math.max(0, Math.min(frameCount - 1, Math.round(value)));
+      postFrame();
+    }
+
+    function setPlaying(value) {
+      playing = Boolean(value) && ready === 2;
+      playButton.textContent = playing ? "Pause" : "Play";
+      lastTick = null;
+      accumulator = 0;
+    }
+
+    function tick(now) {
+      if (playing) {
+        if (lastTick != null) {
+          accumulator += ((now - lastTick) / 1000) * 60 * Number(speed.value);
+          const advance = Math.floor(accumulator);
+          if (advance > 0) {
+            accumulator -= advance;
+            setFrame((frame + advance) % frameCount);
+          }
+        }
+        lastTick = now;
+      }
+      requestAnimationFrame(tick);
+    }
+
+    addEventListener("message", (event) => {
+      if (event.data?.type === "msl-viewer-ready") { ready += 1; if (ready === 2) postFrame(); }
+      if (event.data?.type === "msl-viewer-state") {
+        document.documentElement.dataset[`${event.data.role}Trace`] = event.data.active;
+        document.documentElement.dataset[`${event.data.role}Frame`] = String(event.data.frame);
+      }
+      if (event.data?.type === "msl-viewer-error") {
+        const error = document.createElement("div"); error.className = "error"; error.textContent = event.data.error; document.body.append(error);
+      }
+    });
+    document.querySelector("#reset").addEventListener("click", () => { setPlaying(false); setFrame(0); });
+    document.querySelector("#step-back").addEventListener("click", () => { setPlaying(false); setFrame(frame - 1); });
+    document.querySelector("#step-forward").addEventListener("click", () => { setPlaying(false); setFrame(frame + 1); });
+    playButton.addEventListener("click", () => setPlaying(!playing));
+    seek.addEventListener("input", () => { setPlaying(false); setFrame(Number(seek.value)); });
+    const fullscreenButton = document.querySelector("#fullscreen");
+    async function toggleFullscreen() {
+      if (document.fullscreenElement) await document.exitFullscreen?.();
+      else await document.documentElement.requestFullscreen?.();
+    }
+    function updateFullscreenButton() {
+      const active = Boolean(document.fullscreenElement);
+      fullscreenButton.textContent = active ? "[x]" : "[ ]";
+      fullscreenButton.title = active ? "Exit fullscreen" : "Fullscreen";
+      fullscreenButton.setAttribute("aria-label", active ? "Exit fullscreen" : "Fullscreen");
+    }
+    fullscreenButton.addEventListener("click", () => toggleFullscreen().catch((error) => {
+      console.error(`Fullscreen failed: ${error.message}`);
+    }));
+    document.addEventListener("fullscreenchange", updateFullscreenButton);
+    updateFullscreenButton();
+    buildTimeline(); postFrame(); requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <script src="/msl-static/tools/viewer/slippi-viewer/dist/index.js?v=damage-fly-boundary-2"></script>
+  <style>
+    html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#111512; }
+    slippi-viewer { display:block; width:100%; height:100%; }
+  </style>
+</head>
+<body>
+  <slippi-viewer zips-base-url="/msl-static/tools/viewer/slippi-viewer/public"></slippi-viewer>
+  <script type="module">
+    import { mslTraceToReplayData } from "/msl-static/tools/viewer/msltrace1.js";
+
+    const params = new URLSearchParams(location.search);
+    const role = params.get("role") || "left";
+    const replayUrl = params.get("replay");
+    const agentUrl = params.get("agent");
+    const switchFrame = Number(params.get("switch") || 0);
+    const viewer = document.querySelector("slippi-viewer");
+    const data = {};
+    let active = null;
+
+    async function load(url) {
+      if (!url) return null;
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`${response.status} loading ${url}`);
+      const trace = await response.json();
+      const replayData = mslTraceToReplayData(trace);
+      const gameFrameOffset = Number(
+        trace.metadata?.traceFrameToGameFrame?.offset
+        ?? trace.match?.start?.simFrameId
+        ?? 0
+      );
+      if (Number.isFinite(gameFrameOffset)) {
+        // slippi-viewer's timer adds the 123 pre-game frames internally.
+        replayData.settings.timerStart = 480 - ((gameFrameOffset + 123) / 60);
+      }
+      return replayData;
+    }
+
+    function activate(key) {
+      if (active === key) return;
+      try { viewer.setLiveReplayData(data[key]); } catch (error) { throw new Error(`activate ${key}: ${error.stack || error.message}`); }
+      viewer.pausePlayback();
+      active = key;
+      document.documentElement.dataset.activeTrace = key;
+    }
+
+    function setFrame(frame) {
+      let activeFrame;
+      if (role === "right" && frame >= switchFrame) {
+        activate("agent");
+        activeFrame = Math.max(0, frame - switchFrame);
+      } else {
+        activate("replay");
+        activeFrame = Math.max(0, frame);
+      }
+      viewer.setFrame(activeFrame);
+      document.documentElement.dataset.activeFrame = String(activeFrame);
+      parent.postMessage({ type: "msl-viewer-state", role, active, frame: activeFrame }, "*");
+    }
+
+    try {
+      await customElements.whenDefined("slippi-viewer");
+      const theme = document.createElement("style");
+      theme.textContent = `
+        .bg-slate-50 { background:#111512 !important; }
+        .stroke-slippi-50 { stroke:#29332d !important; }
+        text.fill-slate-800 { fill:#e8ece9 !important; }
+        .border { border-color:#39413c !important; }
+      `;
+      viewer.shadowRoot?.append(theme);
+      [data.replay, data.agent] = await Promise.all([load(replayUrl), load(agentUrl)]);
+      if (!data.replay || (role === "right" && !data.agent)) throw new Error("missing trace URL");
+      setFrame(0);
+      parent.postMessage({ type: "msl-viewer-ready", role }, "*");
+    } catch (error) {
+      document.body.textContent = `Viewer failed: ${error.message}`;
+      parent.postMessage({ type: "msl-viewer-error", role, error: error.message }, "*");
+    }
+
+    addEventListener("message", (event) => {
+      if (event.data?.type !== "set-frame") return;
+      try {
+        setFrame(Number(event.data.frame || 0));
+      } catch (error) {
+        document.documentElement.dataset.renderError = error.message;
+        parent.postMessage({ type: "msl-viewer-error", role, error: error.message }, "*");
+      }
+    });
+  </script>
+</body>
+</html>
