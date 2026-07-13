@@ -604,6 +604,14 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
         const absoluteFrame = Number(shell?.dataset.startFrame || 0) + relativeFrame;
         if (label) label.textContent = `Comparison paused at f${{absoluteFrame}}`;
       }};
+      addEventListener('message', event => {{
+        if (event.data?.type !== 'comparison-frame') return;
+        const frame = interactiveFrames.find(candidate => candidate.contentWindow === event.source);
+        if (!frame || frame.dataset.loading === 'true') return;
+        const relativeFrame = Number(event.data.frame) || 0;
+        savedFrames.set(frame, relativeFrame);
+        setPosterFrame(frame, relativeFrame);
+      }});
       const captureFrameState = frame => {{
         let relativeFrame = savedFrames.get(frame) || 0;
         try {{

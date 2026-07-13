@@ -317,6 +317,7 @@
       left.contentWindow?.postMessage(message, "*");
       right.contentWindow?.postMessage(message, "*");
       seek.value = String(frame);
+      parent.postMessage({ type: "comparison-frame", frame }, "*");
       const absolute = startFrame + frame;
       frameLabel.textContent = `f${absolute} | ${frame + 1}/${frameCount}`;
       rightLabel.textContent = frame < switchFrame ? "Replay" : frame < defenderSwitch ? "MSL attacker" : "Both MSL";
