@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -159,6 +160,26 @@ def _disable_gpus_if_needed(enable_gpu: bool) -> None:
     from slippi_ai import eval_lib  # type: ignore
 
     eval_lib.disable_gpus()
+
+
+def _acquire_gpu_lock(enable_gpu: bool):
+    if not enable_gpu:
+        return None
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    lock_path = Path(os.environ.get("SLIPPI_AI_REVIEW_GPU_LOCK", "/tmp/slippi_ai_review_gpu.lock"))
+    handle = lock_path.open("a+", encoding="utf-8")
+    started = time.perf_counter()
+    print(json.dumps({"event": "gpu_lock_wait", "path": str(lock_path)}), flush=True)
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    print(json.dumps({
+        "event": "gpu_lock_acquired",
+        "path": str(lock_path),
+        "waitSeconds": round(time.perf_counter() - started, 3),
+    }), flush=True)
+    return handle
 
 
 def _max_rollout_steps(args: argparse.Namespace) -> int:
@@ -1293,6 +1314,7 @@ def main() -> int:
     out_dir = args.out.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
+    _gpu_lock = _acquire_gpu_lock(args.enable_gpu)
 
     setup_msl(args.msl_root)
     if str(args.slippi_ai_root.resolve()) not in sys.path:
