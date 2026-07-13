@@ -409,6 +409,7 @@ def main() -> int:
     settings = load_settings()
     state_path = args.out / "benchmark_state.json"
     state = read_json(state_path) if state_path.is_file() else initial_state(args, games)
+    state["status"] = "running"
     save_state(state_path, state, {"event": "runner_started", "pid": __import__("os").getpid()})
     deadline = datetime.fromisoformat(state["deadline_at"])
     completed_keys = {
