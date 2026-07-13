@@ -69,6 +69,17 @@ class ScenarioSelectionTests(unittest.TestCase):
         stream = {"takeoverFrame": -80, "endFrame": 20}
         self.assertEqual(derive_practice_window(target, stream, 60), (-123, -100, 20))
 
+    def test_practice_window_caps_leadin_at_200_frames(self) -> None:
+        target = {
+            "replay_baseline": {
+                "segment_start_frame": 1190,
+                "sequence_opening_move": {"frame": 1190},
+                "presentation_segment": {"openingFrame": 924},
+            },
+        }
+        stream = {"takeoverFrame": 1345, "endFrame": 1499}
+        self.assertEqual(derive_practice_window(target, stream, 30), (1145, 924, 1499))
+
 
 class AtomicInstallTests(unittest.TestCase):
     def test_installs_to_reserved_card_filename(self) -> None:

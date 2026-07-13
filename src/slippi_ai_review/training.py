@@ -29,6 +29,7 @@ CARD_FILENAME = "01-GTME-TMREC_CODEX_AUTOLOAD.gci"
 INTERNAL_FILENAME = "TMREC_CODEX_AUTOLOAD"
 LAUNCH_STATE = SETTINGS.data_dir / "training_mode_ce_state.json"
 DEFAULT_PREROLL_FRAMES = 30
+MAX_PRACTICE_LEADIN_FRAMES = 200
 SCENARIO_MODES = ("replay", "phillip")
 
 
@@ -93,7 +94,11 @@ def derive_practice_window(
         if frame is not None and int(frame) <= takeover_frame
     ]
     opening_frame = min(valid_openings) if valid_openings else takeover_frame
-    practice_start_frame = max(-123, opening_frame - max(DEFAULT_PREROLL_FRAMES, preroll_frames))
+    practice_start_frame = max(
+        -123,
+        takeover_frame - MAX_PRACTICE_LEADIN_FRAMES,
+        opening_frame - max(DEFAULT_PREROLL_FRAMES, preroll_frames),
+    )
     return practice_start_frame, opening_frame, end_frame
 
 
@@ -377,7 +382,10 @@ def main() -> None:
         "requestedPracticeStartFrame": practice_start_frame,
         "practiceStartFrame": safe_start_frame,
         "openingHitFrame": opening_frame,
-        "preRollFrames": opening_frame - safe_start_frame,
+        "openingHitIncluded": safe_start_frame <= opening_frame,
+        "preRollFrames": max(0, opening_frame - safe_start_frame),
+        "omittedContextFrames": max(0, safe_start_frame - opening_frame),
+        "takeoverLeadInFrames": takeover_frame - safe_start_frame,
         "takeoverFrame": takeover_frame if args.scenario_mode == "phillip" else None,
         "endFrame": end_frame,
         "durationFrames": end_frame - safe_start_frame + 1,
