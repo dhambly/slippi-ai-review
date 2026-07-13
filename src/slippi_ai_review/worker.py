@@ -162,6 +162,9 @@ def pipeline_command(args: argparse.Namespace, review: dict[str, object]) -> lis
         "--max-batch-lanes", str(args.max_batch_lanes),
         "--render-workers", str(args.render_workers),
     )
+    match = review.get("match") if isinstance(review.get("match"), dict) else {}
+    if match.get("slpVersion"):
+        command.extend(("--slp-version", str(match["slpVersion"])))
     if args.force:
         command.append("--force")
     return command

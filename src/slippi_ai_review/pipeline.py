@@ -32,11 +32,15 @@ def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def set_queue_display_name(path: Path, display_name: str) -> None:
+def set_queue_metadata(path: Path, *, display_name: str, slp_version: str | None) -> None:
     payload = read_json(path)
-    if payload.get("display_name") == display_name:
-        return
+    changed = payload.get("display_name") != display_name
     payload["display_name"] = display_name
+    if slp_version and payload.get("slp_version") != slp_version:
+        payload["slp_version"] = slp_version
+        changed = True
+    if not changed:
+        return
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
@@ -161,6 +165,7 @@ def build_empty_report(args: argparse.Namespace, work: Path, candidates: dict[st
     queue_path.write_text(json.dumps({
         "replay": str(args.replay),
         "display_name": args.display_name,
+        "slp_version": args.slp_version,
         "controlled_port": args.controlled_port,
         "selection_audit": selection_audit,
         "targets": [],
@@ -192,6 +197,7 @@ def main() -> int:
     parser.add_argument("--controlled-port", type=int, choices=(1, 2), required=True)
     parser.add_argument("--job-dir", type=Path, required=True)
     parser.add_argument("--display-name")
+    parser.add_argument("--slp-version")
     settings = load_settings()
     parser.add_argument("--model", type=Path, default=settings.model)
     parser.add_argument("--msl-root", type=Path, default=settings.msl_root)
@@ -275,7 +281,7 @@ def main() -> int:
         ), logs / "preflight_selection.log")
     else:
         emit("preflight_selection", "Reusing completed preflight selection.")
-    set_queue_display_name(preflight_queue, args.display_name)
+    set_queue_metadata(preflight_queue, display_name=args.display_name, slp_version=args.slp_version)
 
     preflight_payload = read_json(preflight_queue)
     if not (preflight_payload.get("targets") or []):
@@ -309,7 +315,7 @@ def main() -> int:
             ), logs / "route_selection.log")
         else:
             emit("route_selection", "Reusing completed route selection.")
-        set_queue_display_name(render_queue, args.display_name)
+        set_queue_metadata(render_queue, display_name=args.display_name, slp_version=args.slp_version)
 
         queue_payload = read_json(render_queue)
         if not (queue_payload.get("targets") or []):

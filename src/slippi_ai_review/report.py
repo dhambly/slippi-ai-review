@@ -151,6 +151,55 @@ def insertion_text(item: dict[str, Any], *, display_index: int) -> dict[str, str
     }
 
 
+def is_legacy_slp_version(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parts = tuple(int(part) for part in value.split(".")[:3])
+    except ValueError:
+        return False
+    return (parts + (0, 0, 0))[:3] < (3, 16, 0)
+
+
+def queue_slp_version(queue: dict[str, Any], queue_path: Path) -> str | None:
+    if queue.get("slp_version"):
+        return str(queue["slp_version"])
+    for parent in queue_path.parents:
+        review_path = parent / "review.json"
+        if not review_path.is_file():
+            continue
+        try:
+            review = json.loads(review_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        match = review.get("match") if isinstance(review.get("match"), dict) else {}
+        return str(match["slpVersion"]) if match.get("slpVersion") else None
+    return None
+
+
+def practice_actions_html(*, legacy_slp: bool) -> str:
+    warning = (
+        '<small>Older SLP files may not replay correctly</small>'
+        if legacy_slp else ""
+    )
+    title = (
+        ' title="Training Mode CE replay export requires SLP version 3.16.0 or newer."'
+        if legacy_slp else ""
+    )
+    return f"""
+          <div class="practice-actions">
+            <button type="button" class="practice-ce" data-scenario-mode="replay"{title}>
+              <span>Replay in CE</span>
+              {warning}
+            </button>
+            <button type="button" class="practice-ce" data-scenario-mode="phillip"{title}>
+              <span>Phillip rollout in CE</span>
+              {warning}
+            </button>
+            <span class="practice-status" role="status" aria-live="polite"></span>
+          </div>"""
+
+
 def build_page(payload: dict[str, Any], *, out: Path) -> str:
     queue_path = Path(payload["queue_json"])
     queue = json.loads(queue_path.read_text(encoding="utf-8"))
@@ -161,6 +210,9 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
     replay = Path(queue.get("replay") or "game.slp")
     display_name = str(queue.get("display_name") or replay.stem)
     analyzed_port = int(queue.get("controlled_port") or 1)
+    practice_actions = practice_actions_html(
+        legacy_slp=is_legacy_slp_version(queue_slp_version(queue, queue_path))
+    )
 
     moments: list[dict[str, Any]] = []
     for index, target in enumerate(targets, start=1):
@@ -337,17 +389,7 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
           {interactive_html}
           {insertion_html}
           {route_html}
-          <div class="practice-actions">
-            <button type="button" class="practice-ce" data-scenario-mode="replay" title="Older SLP files may not replay correctly in Training Mode CE.">
-              <span>Replay in CE</span>
-              <small>Older SLP files may not replay correctly</small>
-            </button>
-            <button type="button" class="practice-ce" data-scenario-mode="phillip" title="Older SLP files may not replay correctly in Training Mode CE.">
-              <span>Phillip rollout in CE</span>
-              <small>Older SLP files may not replay correctly</small>
-            </button>
-            <span class="practice-status" role="status" aria-live="polite"></span>
-          </div>
+          {practice_actions}
           <div class="video-shell">{clip_html}</div>
           <div class="comparison" aria-label="Replay and model outcome comparison">
             <section>
@@ -726,7 +768,6 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
         routePicker.querySelector('summary span').textContent = `${{alternativeCount}} alternatives`;
         const primaryRoute = activeGroup?.querySelector('.route-option');
         if (primaryRoute) selectRoute(primaryRoute, true);
-        insertionButton.closest('.insertion-picker')?.removeAttribute('open');
       }});
       interactiveFrames.forEach(frame => frame.addEventListener('load', () => {{
         if (frame.getAttribute('src') && frame.getAttribute('src') !== 'about:blank') restoreFrameState(frame);
