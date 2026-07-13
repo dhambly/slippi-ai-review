@@ -19,6 +19,8 @@ from .paths import PACKAGE_DIR, PROJECT_DIR, module_command
 
 WORK_DIR = PROJECT_DIR
 PYTHON = sys.executable
+PREFLIGHT_MIN_OPTION_SAMPLES = 2
+REFINEMENT_MIN_OPTION_SAMPLES = 8
 
 
 def windows_to_wsl(path: Path) -> str:
@@ -273,7 +275,7 @@ def main() -> int:
             "--iso", str(args.iso),
             "--controlled-port", str(args.controlled_port),
             "--top", "0",
-            "--min-option-samples", "8",
+            "--min-option-samples", str(PREFLIGHT_MIN_OPTION_SAMPLES),
             "--min-option-share", "0.1",
             "--min-improvement-rate", "0.25",
             "--alternative-routes", "3",
@@ -307,7 +309,7 @@ def main() -> int:
                 "--iso", str(args.iso),
                 "--controlled-port", str(args.controlled_port),
                 "--top", "0",
-                "--min-option-samples", "8",
+                "--min-option-samples", str(REFINEMENT_MIN_OPTION_SAMPLES),
                 "--min-option-share", "0.1",
                 "--min-improvement-rate", "0.25",
                 "--alternative-routes", "3",

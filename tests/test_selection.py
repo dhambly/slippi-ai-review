@@ -4,7 +4,18 @@ from __future__ import annotations
 
 import unittest
 
+from slippi_ai_review.pipeline import (
+    PREFLIGHT_MIN_OPTION_SAMPLES,
+    REFINEMENT_MIN_OPTION_SAMPLES,
+)
 from slippi_ai_review.selection import lane_outperformed, meaningful_option
+
+
+class PipelineSelectionThresholdTests(unittest.TestCase):
+    def test_preflight_is_less_strict_than_refinement(self) -> None:
+        self.assertEqual(PREFLIGHT_MIN_OPTION_SAMPLES, 2)
+        self.assertEqual(REFINEMENT_MIN_OPTION_SAMPLES, 8)
+        self.assertLess(PREFLIGHT_MIN_OPTION_SAMPLES, REFINEMENT_MIN_OPTION_SAMPLES)
 
 
 BASELINE = {
