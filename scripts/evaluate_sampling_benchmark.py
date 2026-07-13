@@ -16,6 +16,11 @@ from slippi_ai_review.selection import meaningful_option, option_summary
 
 PREFLIGHT_BUDGETS = (16, 24, 32, 48, 64, 96, 128)
 REFINEMENT_BUDGETS = (32, 48, 64, 80, 96, 112, 128, 160, 192, 256)
+THRESHOLD_SWEEPS = {
+    "min_option_samples": (1, 2, 4, 8, 12, 16, 24),
+    "min_option_share": (0.05, 0.1, 0.15, 0.2),
+    "min_improvement_rate": (0.1, 0.2, 0.25, 0.33, 0.5),
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -119,6 +124,23 @@ def select_options(
     for rank, (frame, _) in enumerate(ranked, 1):
         result[frame]["rank"] = rank
     return result
+
+
+def select_with_threshold(
+    rows: list[dict[str, Any]],
+    baselines: dict[int, dict[str, Any]],
+    *,
+    stage: str,
+    knob: str,
+    value: float,
+) -> dict[int, dict[str, Any]]:
+    settings: dict[str, float | int] = {
+        "min_option_samples": 2 if stage == "preflight" else 8,
+        "min_option_share": 0.1,
+        "min_improvement_rate": 0.25,
+    }
+    settings[knob] = int(value) if knob == "min_option_samples" else float(value)
+    return select_options(rows, baselines, **settings)
 
 
 def queue_options(payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -265,6 +287,54 @@ def evaluate_job(
     return output
 
 
+def evaluate_thresholds(summary_path: Path, game_metadata: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    job = read_json(summary_path)
+    run_root = summary_path.parent
+    game_root = run_root.parents[1]
+    baselines_payload = read_json(game_root / "candidates.json")
+    baselines = {int(item["frame"]): item for item in baselines_payload.get("frames") or []}
+    preflight_rows = read_jsonl(Path(job["preflight"]) / "lanes.jsonl")
+    refinement_rows = read_jsonl(Path(job["refinement"]) / "lanes.jsonl") if job.get("final_selection") else []
+    reference_preflight = queue_options(read_json(Path(job["preflight_selection"])))
+    reference_final = queue_options(read_json(Path(job["final_selection"]))) if job.get("final_selection") else {}
+    output = []
+    for stage in ("preflight", "refinement"):
+        source_rows = preflight_rows if stage == "preflight" else refinement_rows
+        if not source_rows:
+            continue
+        for knob, values in THRESHOLD_SWEEPS.items():
+            for value in values:
+                selected = select_with_threshold(
+                    source_rows,
+                    baselines,
+                    stage=stage,
+                    knob=knob,
+                    value=value,
+                )
+                if stage == "preflight":
+                    downstream = select_options(
+                        [row for row in refinement_rows if int(row["baseFrame"]) in selected],
+                        baselines,
+                        min_option_samples=8,
+                    )
+                    stage_comparison = compare_options(selected, reference_preflight)
+                    final_comparison = compare_options(downstream, reference_final)
+                else:
+                    stage_comparison = compare_options(selected, reference_final)
+                    final_comparison = stage_comparison
+                output.append({
+                    "game": job["game"],
+                    "matchup": game_metadata.get(job["game"], {}).get("matchup"),
+                    "replicate": int(job["replicate"]),
+                    "stage": stage,
+                    "knob": knob,
+                    "value": value,
+                    **{f"stage_{key}": metric for key, metric in stage_comparison.items()},
+                    **{f"final_{key}": metric for key, metric in final_comparison.items()},
+                })
+    return output
+
+
 def aggregate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[tuple[str, int, int], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -295,6 +365,30 @@ def aggregate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             record[f"median_{metric}"] = round(median(values), 6) if values else None
         output.append(record)
     return sorted(output, key=lambda item: (item["mode"], item["preflight_budget"], item["refinement_budget"]))
+
+
+def aggregate_thresholds(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str, float], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[(row["stage"], row["knob"], float(row["value"]))].append(row)
+    metrics = (
+        "stage_frame_precision",
+        "stage_frame_recall",
+        "stage_frame_jaccard",
+        "stage_primary_agreement",
+        "final_frame_precision",
+        "final_frame_recall",
+        "final_frame_jaccard",
+        "final_primary_agreement",
+    )
+    output = []
+    for (stage, knob, value), items in groups.items():
+        record = {"stage": stage, "knob": knob, "value": value, "observations": len(items)}
+        for metric in metrics:
+            values = [float(item[metric]) for item in items if item.get(metric) is not None]
+            record[f"mean_{metric}"] = round(mean(values), 6) if values else None
+        output.append(record)
+    return sorted(output, key=lambda item: (item["stage"], item["knob"], item["value"]))
 
 
 def cross_replicate(benchmark: Path) -> list[dict[str, Any]]:
@@ -378,11 +472,14 @@ def main() -> int:
     manifest = read_json(manifest_path) if manifest_path.is_file() else {"games": []}
     game_metadata = {str(game["id"]): game for game in manifest.get("games") or []}
     detail = []
+    threshold_detail = []
     summaries = sorted(benchmark.glob("games/*/replicates/*/job_summary.json"))
     for summary in summaries:
         if read_json(summary).get("status") == "complete":
             detail.extend(evaluate_job(summary, args.random_trials, game_metadata))
+            threshold_detail.extend(evaluate_thresholds(summary, game_metadata))
     aggregate_rows = aggregate(detail)
+    threshold_rows = aggregate_thresholds(threshold_detail)
     replicate_rows = cross_replicate(benchmark)
     (out / "virtual_budget_results.jsonl").write_text(
         "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in detail),
@@ -390,11 +487,17 @@ def main() -> int:
     )
     (out / "aggregate.json").write_text(json.dumps(aggregate_rows, indent=2) + "\n", encoding="utf-8")
     (out / "cross_replicate.json").write_text(json.dumps(replicate_rows, indent=2) + "\n", encoding="utf-8")
+    (out / "threshold_sensitivity.jsonl").write_text(
+        "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in threshold_detail),
+        encoding="utf-8",
+    )
+    (out / "threshold_aggregate.json").write_text(json.dumps(threshold_rows, indent=2) + "\n", encoding="utf-8")
     write_markdown(out / "sampling_report.md", aggregate_rows, replicate_rows, len(summaries))
     print(json.dumps({
         "completed_jobs": len(summaries),
         "detail_rows": len(detail),
         "aggregate_rows": len(aggregate_rows),
+        "threshold_rows": len(threshold_detail),
         "cross_replicate_pairs": len(replicate_rows),
         "report": str((out / "sampling_report.md").resolve()),
     }, indent=2))
