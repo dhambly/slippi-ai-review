@@ -882,7 +882,7 @@ def _load_frame_metadata(path: Path | None) -> dict[int, dict[str, Any]]:
     for item in payload:
         if not isinstance(item, dict):
             continue
-        for key in ("takeover_frame", "takeoverFrame", "start_frame", "startFrame", "frame"):
+        for key in ("base_frame", "baseFrame", "takeover_frame", "takeoverFrame", "start_frame", "startFrame", "frame"):
             if item.get(key) is not None:
                 baseline = item.get("replay_baseline")
                 out[int(item[key])] = {**baseline, **item} if isinstance(baseline, dict) else item

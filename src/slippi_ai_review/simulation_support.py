@@ -148,7 +148,7 @@ def _load_base_frames(args: argparse.Namespace) -> list[int]:
                 frames.append(int(item))
                 continue
             if isinstance(item, dict):
-                for key in ("takeover_frame", "takeoverFrame", "start_frame", "startFrame", "frame"):
+                for key in ("base_frame", "baseFrame", "takeover_frame", "takeoverFrame", "start_frame", "startFrame", "frame"):
                     if item.get(key) is not None:
                         frames.append(int(item[key]))
                         break

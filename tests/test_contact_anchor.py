@@ -1,18 +1,34 @@
 from __future__ import annotations
 
 import unittest
+import json
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
 from slippi_ai_review.simulation import (
+    _load_frame_metadata,
     _post_contact_anchor_record,
     _recorded_contact_frame,
     _replay_baseline_after_anchor,
 )
+from slippi_ai_review.simulation_support import _load_base_frames
 
 
 class ContactAnchorTest(unittest.TestCase):
+    def test_refinement_preserves_candidate_base_frame(self) -> None:
+        payload = {
+            "targets": [{"base_frame": 1330, "takeover_frame": 1345, "label": "anchored"}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "targets.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            args = SimpleNamespace(takeover_frame=[], takeover_frames_json=path)
+            self.assertEqual(_load_base_frames(args), [1330])
+            self.assertEqual(_load_frame_metadata(path)[1330]["label"], "anchored")
+
     def test_finds_first_progressed_frame_after_hitlag(self) -> None:
         dtype = np.dtype([
             ("hitlag", np.uint16, (2,)),
