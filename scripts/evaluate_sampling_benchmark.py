@@ -27,6 +27,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--benchmark", type=Path, required=True)
     parser.add_argument("--random-trials", type=int, default=3)
+    parser.add_argument(
+        "--cross-budgets",
+        action="store_true",
+        help="Also compare virtual budgets from each replicate against the preceding independent replicate.",
+    )
     parser.add_argument("--out", type=Path, default=None)
     return parser.parse_args()
 
@@ -221,16 +226,22 @@ def evaluate_job(
     summary_path: Path,
     random_trials: int,
     game_metadata: dict[str, dict[str, Any]],
+    reference_summary_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     job = read_json(summary_path)
+    reference_job = read_json(reference_summary_path) if reference_summary_path is not None else job
     run_root = summary_path.parent
     game_root = run_root.parents[1]
     baselines_payload = read_json(game_root / "candidates.json")
     baselines = {int(item["frame"]): item for item in baselines_payload.get("frames") or []}
     preflight_rows = read_jsonl(Path(job["preflight"]) / "lanes.jsonl")
     refinement_rows = read_jsonl(Path(job["refinement"]) / "lanes.jsonl") if job.get("final_selection") else []
-    reference_preflight = queue_options(read_json(Path(job["preflight_selection"])))
-    reference_final = queue_options(read_json(Path(job["final_selection"]))) if job.get("final_selection") else {}
+    reference_preflight = queue_options(read_json(Path(reference_job["preflight_selection"])))
+    reference_final = (
+        queue_options(read_json(Path(reference_job["final_selection"])))
+        if reference_job.get("final_selection")
+        else {}
+    )
     preflight_summary = read_json(Path(job["preflight"]) / "summary.json")
     refinement_summary = read_json(Path(job["refinement"]) / "summary.json") if refinement_rows else {}
     full_preflight = max(int(row["sampleIndex"]) for row in preflight_rows) + 1
@@ -287,6 +298,7 @@ def evaluate_job(
                     "matchup": game_metadata.get(job["game"], {}).get("matchup"),
                     "stage": game_metadata.get(job["game"], {}).get("stage"),
                     "replicate": int(job["replicate"]),
+                    "reference_replicate": int(reference_job["replicate"]),
                     "mode": mode,
                     "trial": trial,
                     "preflight_budget": preflight_budget,
@@ -493,7 +505,25 @@ def main() -> int:
         if read_json(summary).get("status") == "complete":
             detail.extend(evaluate_job(summary, args.random_trials, game_metadata))
             threshold_detail.extend(evaluate_thresholds(summary, game_metadata))
+    cross_budget_detail = []
+    if args.cross_budgets:
+        by_game: dict[str, list[Path]] = defaultdict(list)
+        for summary in summaries:
+            if read_json(summary).get("status") == "complete":
+                by_game[summary.parents[2].name].append(summary)
+        for game_summaries in by_game.values():
+            game_summaries.sort()
+            for reference, candidate in zip(game_summaries, game_summaries[1:]):
+                cross_budget_detail.extend(
+                    evaluate_job(
+                        candidate,
+                        args.random_trials,
+                        game_metadata,
+                        reference_summary_path=reference,
+                    )
+                )
     aggregate_rows = aggregate(detail)
+    cross_budget_rows = aggregate(cross_budget_detail)
     threshold_rows = aggregate_thresholds(threshold_detail)
     replicate_rows = cross_replicate(benchmark)
     (out / "virtual_budget_results.jsonl").write_text(
@@ -502,6 +532,14 @@ def main() -> int:
     )
     (out / "aggregate.json").write_text(json.dumps(aggregate_rows, indent=2) + "\n", encoding="utf-8")
     (out / "cross_replicate.json").write_text(json.dumps(replicate_rows, indent=2) + "\n", encoding="utf-8")
+    (out / "cross_budget_results.jsonl").write_text(
+        "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in cross_budget_detail),
+        encoding="utf-8",
+    )
+    (out / "cross_budget_aggregate.json").write_text(
+        json.dumps(cross_budget_rows, indent=2) + "\n",
+        encoding="utf-8",
+    )
     (out / "threshold_sensitivity.jsonl").write_text(
         "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in threshold_detail),
         encoding="utf-8",
@@ -514,6 +552,7 @@ def main() -> int:
         "aggregate_rows": len(aggregate_rows),
         "threshold_rows": len(threshold_detail),
         "cross_replicate_pairs": len(replicate_rows),
+        "cross_budget_rows": len(cross_budget_detail),
         "report": str((out / "sampling_report.md").resolve()),
     }, indent=2))
     return 0
