@@ -176,6 +176,15 @@ def compare_options(candidate: dict[int, dict[str, Any]], reference: dict[int, d
         and candidate[frame]["offset"] == reference[frame]["offset"]
         for frame in common
     )
+    candidate_primary_supported = 0
+    reference_primary_supported = 0
+    route_set_jaccards = []
+    for frame in common:
+        candidate_routes = {candidate[frame]["signature"], *candidate[frame].get("alternatives", [])}
+        reference_routes = {reference[frame]["signature"], *reference[frame].get("alternatives", [])}
+        candidate_primary_supported += candidate[frame]["signature"] in reference_routes
+        reference_primary_supported += reference[frame]["signature"] in candidate_routes
+        route_set_jaccards.append(len(candidate_routes & reference_routes) / len(candidate_routes | reference_routes))
     rate_errors = [
         abs(candidate[frame]["improvement_rate"] - reference[frame]["improvement_rate"])
         for frame in common
@@ -190,6 +199,9 @@ def compare_options(candidate: dict[int, dict[str, Any]], reference: dict[int, d
         "frame_jaccard": round(ratio(len(common), len(candidate_frames | reference_frames)), 6),
         "primary_agreement": round(ratio(primary_matches, len(common)), 6),
         "exact_route_agreement": round(ratio(exact_matches, len(common)), 6),
+        "candidate_primary_in_reference_routes": round(ratio(candidate_primary_supported, len(common)), 6),
+        "reference_primary_in_candidate_routes": round(ratio(reference_primary_supported, len(common)), 6),
+        "mean_route_set_jaccard": round(mean(route_set_jaccards), 6) if route_set_jaccards else None,
         "mean_improvement_rate_error": round(mean(rate_errors), 6) if rate_errors else None,
         "mean_rank_error": round(mean(rank_errors), 6) if rank_errors else None,
     }
@@ -347,6 +359,9 @@ def aggregate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "frame_jaccard",
         "primary_agreement",
         "exact_route_agreement",
+        "candidate_primary_in_reference_routes",
+        "reference_primary_in_candidate_routes",
+        "mean_route_set_jaccard",
         "mean_improvement_rate_error",
         "mean_rank_error",
         "projected_seconds",
