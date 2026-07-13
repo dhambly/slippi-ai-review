@@ -18,7 +18,10 @@
     button:hover,button:focus { border-color:var(--green); outline:none; }
     input[type=range] { width:100%; margin:0; accent-color:var(--green); }
     .timeline { position:relative; display:grid; grid-template-rows:25px 25px 22px; gap:1px; min-width:0; align-self:stretch; }
-    .timeline-lane,.seek-row { display:grid; grid-template-columns:43px minmax(0,1fr); gap:6px; align-items:center; min-width:0; }
+    .timeline-lane { display:grid; grid-template-columns:43px minmax(0,1fr); gap:6px; align-items:center; min-width:0; }
+    .seek-row { display:grid; grid-template-columns:43px 24px minmax(0,1fr) 24px; gap:5px; align-items:center; min-width:0; }
+    .move-step { width:24px; min-width:24px; height:20px; padding:0; font-size:12px; line-height:18px; }
+    .move-step:disabled { cursor:default; opacity:.35; border-color:#3b433e; }
     .lane-name { overflow:hidden; color:var(--muted); font:700 9px/1 ui-monospace,Consolas,monospace; text-align:right; text-transform:uppercase; }
     .lane-track { position:relative; height:22px; overflow:hidden; border:1px solid #343b37; border-radius:3px; background:#202421; }
     .lane-track::after { content:""; position:absolute; z-index:1; top:50%; right:0; left:0; border-top:1px solid #3b433e; pointer-events:none; }
@@ -49,7 +52,9 @@
       .timeline { grid-column:1/-1; grid-row:2; }
       .frame { min-width:0; font-size:10px; }
       select { display:none; }
-      .timeline-lane,.seek-row { grid-template-columns:37px minmax(0,1fr); gap:4px; }
+      .timeline-lane { grid-template-columns:37px minmax(0,1fr); gap:4px; }
+      .seek-row { grid-template-columns:37px 22px minmax(0,1fr) 22px; gap:3px; }
+      .move-step { width:22px; min-width:22px; }
       .lane-name { font-size:8px; }
       .move-event { width:7px; height:7px; }
     }
@@ -68,7 +73,12 @@
       <div id="timeline" class="timeline" aria-label="Move-event timeline">
         <div class="timeline-lane"><span class="lane-name">Replay</span><div id="replay-events" class="lane-track" aria-label="Replay move events"></div></div>
         <div class="timeline-lane"><span class="lane-name">MSL</span><div id="agent-events" class="lane-track agent" aria-label="MSL move events"><span class="pre-takeover">REPLAY</span><span class="takeover-line"></span></div></div>
-        <div class="seek-row"><span class="timeline-key"><i class="key-dot"></i>P1 <i class="key-dot p2"></i>P2</span><input id="seek" type="range" min="0" value="0" step="1" aria-label="Frame"></div>
+        <div class="seek-row">
+          <span class="timeline-key"><i class="key-dot"></i>P1 <i class="key-dot p2"></i>P2</span>
+          <button id="previous-move" class="move-step" type="button" title="Previous move" aria-label="Previous move" disabled>&#9664;</button>
+          <input id="seek" type="range" min="0" value="0" step="1" aria-label="Frame">
+          <button id="next-move" class="move-step" type="button" title="Next move" aria-label="Next move" disabled>&#9654;</button>
+        </div>
         <div id="timeline-tooltip" class="timeline-tooltip" role="tooltip"></div>
       </div>
       <span id="frame" class="frame"></span>
@@ -97,11 +107,15 @@
     const replayEvents = document.querySelector("#replay-events");
     const agentEvents = document.querySelector("#agent-events");
     const timelineTooltip = document.querySelector("#timeline-tooltip");
+    const previousMoveButton = document.querySelector("#previous-move");
+    const nextMoveButton = document.querySelector("#next-move");
     let frame = 0;
     let playing = false;
     let ready = 0;
     let lastTick = null;
     let accumulator = 0;
+    let moveFrames = [];
+    let visualizerEngaged = false;
 
     const characterNames = ["Mario","Fox","Captain Falcon","Donkey Kong","Kirby","Bowser","Link","Sheik","Ness","Peach","Popo","Nana","Pikachu","Samus","Yoshi","Jigglypuff","Mewtwo","Luigi","Marth","Zelda","Young Link","Dr. Mario","Falco","Pichu","Mr. Game & Watch","Ganondorf","Roy"];
     const actionNames = new Map([
@@ -257,6 +271,27 @@
       });
     }
 
+    function updateMoveButtons() {
+      previousMoveButton.disabled = !moveFrames.some(moveFrame => moveFrame < frame);
+      nextMoveButton.disabled = !moveFrames.some(moveFrame => moveFrame > frame);
+    }
+
+    function collectMoveFrames() {
+      moveFrames = [...new Set(
+        [...timeline.querySelectorAll(".move-event")].map(marker => Number(marker.dataset.frame))
+      )].filter(Number.isFinite).sort((a, b) => a - b);
+      updateMoveButtons();
+    }
+
+    function jumpToMove(direction) {
+      const destination = direction < 0
+        ? moveFrames.findLast(moveFrame => moveFrame < frame)
+        : moveFrames.find(moveFrame => moveFrame > frame);
+      if (destination == null) return;
+      setPlaying(false);
+      setFrame(destination);
+    }
+
     async function buildTimeline() {
       try {
         let metadata = null;
@@ -302,6 +337,7 @@
         renderEvents(replayEvents, replayLane, 0, "Replay", "replay");
         renderEvents(agentEvents, replayLane, 0, "Replay before takeover", "replay-prefix", switchFrame);
         renderEvents(agentEvents, agentLane, agentOffset, "MSL", "msl");
+        collectMoveFrames();
         document.documentElement.dataset.timelineReady = "true";
         document.documentElement.dataset.timelineSource = metadataReplay != null && metadataAgent != null ? "metadata" : metadata ? "mixed" : "trace";
         document.documentElement.dataset.replayEventCount = String(replayEvents.querySelectorAll(".move-event").length);
@@ -321,6 +357,7 @@
       const absolute = startFrame + frame;
       frameLabel.textContent = `f${absolute} | ${frame + 1}/${frameCount}`;
       rightLabel.textContent = frame < switchFrame ? "Replay" : frame < defenderSwitch ? "MSL attacker" : "Both MSL";
+      updateMoveButtons();
     }
 
     function setFrame(value) {
@@ -352,6 +389,11 @@
 
     addEventListener("message", (event) => {
       if (event.data?.type === "msl-viewer-ready") { ready += 1; if (ready === 2) postFrame(); }
+      if (event.data?.type === "msl-viewer-interacted") visualizerEngaged = true;
+      if (event.data?.type === "msl-viewer-toggle-playback") {
+        visualizerEngaged = true;
+        setPlaying(!playing);
+      }
       if (event.data?.type === "msl-viewer-state") {
         document.documentElement.dataset[`${event.data.role}Trace`] = event.data.active;
         document.documentElement.dataset[`${event.data.role}Frame`] = String(event.data.frame);
@@ -363,8 +405,17 @@
     document.querySelector("#reset").addEventListener("click", () => { setPlaying(false); setFrame(0); });
     document.querySelector("#step-back").addEventListener("click", () => { setPlaying(false); setFrame(frame - 1); });
     document.querySelector("#step-forward").addEventListener("click", () => { setPlaying(false); setFrame(frame + 1); });
+    previousMoveButton.addEventListener("click", () => jumpToMove(-1));
+    nextMoveButton.addEventListener("click", () => jumpToMove(1));
     playButton.addEventListener("click", () => setPlaying(!playing));
     seek.addEventListener("input", () => { setPlaying(false); setFrame(Number(seek.value)); });
+    document.addEventListener("pointerdown", () => { visualizerEngaged = true; });
+    document.addEventListener("keydown", (event) => {
+      if (!visualizerEngaged || event.key !== " " || event.defaultPrevented || event.repeat) return;
+      if (event.target.closest("button,input,select,.move-event")) return;
+      event.preventDefault();
+      setPlaying(!playing);
+    });
     const fullscreenButton = document.querySelector("#fullscreen");
     async function toggleFullscreen() {
       if (document.fullscreenElement) await document.exitFullscreen?.();

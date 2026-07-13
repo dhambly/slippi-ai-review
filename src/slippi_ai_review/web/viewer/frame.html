@@ -91,6 +91,14 @@
         parent.postMessage({ type: "msl-viewer-error", role, error: error.message }, "*");
       }
     });
+    addEventListener("pointerdown", () => {
+      parent.postMessage({ type: "msl-viewer-interacted", role }, "*");
+    }, { capture:true });
+    addEventListener("keydown", (event) => {
+      if (event.key !== " " || event.repeat) return;
+      event.preventDefault();
+      parent.postMessage({ type: "msl-viewer-toggle-playback", role }, "*");
+    }, { capture:true });
   </script>
 </body>
 </html>
