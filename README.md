@@ -53,6 +53,30 @@ installs Phillip and Node, extracts MSL data, writes
 notes, source fallback behavior, and copy-paste commands are in
 [Portable Installation](docs/portable-install.md).
 
+### Complete Private Bundle
+
+The private complete archive contains the application, `gm-v2`, native MSL
+runtimes, and a local legal ISO. After extracting it, setup needs no asset
+arguments:
+
+```bash
+cd slippi-ai-review
+sh ./scripts/bootstrap-posix.sh
+source .venv/bin/activate
+slippi-review serve --host 127.0.0.1 --port 8877
+```
+
+Create or refresh that local-only archive with:
+
+```bash
+python scripts/build_source_bundle.py \
+  --iso /absolute/path/to/GALE01.iso \
+  --out dist/slippi-ai-review-complete.tar
+```
+
+The complete archive and `local-assets/` are ignored by Git. Never push or
+publish an archive containing the ISO.
+
 ## Windows
 
 Windows remains supported through the existing WSL/micromamba runtime. Set
