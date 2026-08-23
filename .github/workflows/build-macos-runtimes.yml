@@ -21,6 +21,7 @@ jobs:
       LEGACY_COMMIT: dadf7f082cc1ae41d9f05ebd26e5c2bdb4ce6fd6
       DECOMP_COMMIT: 003c03d6a0fec63897bd4c7dac295a4e60600aed
       GIT_LFS_SKIP_SMUDGE: "1"
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v5
 
