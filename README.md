@@ -59,6 +59,10 @@ The private complete archive contains the application, `gm-v2`, native MSL
 runtimes, and a local legal ISO. After extracting it, setup needs no asset
 arguments:
 
+On Linux and macOS, run these commands in the normal terminal. On Windows, run
+them inside WSL, not PowerShell. A fresh Windows installation must already have
+WSL, `git`, and `uv` installed.
+
 ```bash
 cd slippi-ai-review
 sh ./scripts/bootstrap-posix.sh
@@ -79,10 +83,26 @@ publish an archive containing the ISO.
 
 ## Windows
 
-Windows remains supported through the existing WSL/micromamba runtime. Set
-`runtime.mode = "wsl"` and fill in the `[wsl]` section of
-[`config.example.toml`](config.example.toml). The portable bootstrap is
-deliberately native-POSIX only.
+The portable bootstrap does not run directly in PowerShell or `cmd.exe`.
+Windows uses WSL: place or extract the repository in the WSL filesystem, open a
+WSL terminal, and run the same POSIX commands shown above. Keeping the checkout
+under the WSL home directory is strongly recommended because installation on a
+mounted Windows drive is much slower.
+
+After setup, start the server from WSL:
+
+```bash
+source .venv/bin/activate
+slippi-review serve --host 127.0.0.1 --port 8877
+```
+
+Open `http://127.0.0.1:8877` in the Windows browser. This server command also
+starts the persistent analysis worker. A true fresh-Windows one-command
+PowerShell installer is not currently included.
+
+Existing development installations may instead use the older WSL/micromamba
+configuration by setting `runtime.mode = "wsl"` and filling in the `[wsl]`
+section of [`config.example.toml`](config.example.toml).
 
 ## Run
 
