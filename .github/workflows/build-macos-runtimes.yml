@@ -1,0 +1,95 @@
+name: build-macos-runtimes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            platform: macos-arm64
+          - runner: macos-15-intel
+            platform: macos-x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      LEGACY_COMMIT: dadf7f082cc1ae41d9f05ebd26e5c2bdb4ce6fd6
+      DECOMP_COMMIT: a68dcd50df121d0ef72987ca658b3243047eca75
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify locked revisions
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          lock = json.loads(Path("dependencies.lock.json").read_text())
+          sources = lock["sourceDependencies"]
+          assert sources["msl-legacy"]["commit"] == os.environ["LEGACY_COMMIT"]
+          assert sources["msl-decomp"]["commit"] == os.environ["DECOMP_COMMIT"]
+          PY
+
+      - name: Configure read-only MSL deploy key
+        env:
+          MSL_DEPLOY_KEY: ${{ secrets.MSL_DEPLOY_KEY }}
+        run: |
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$MSL_DEPLOY_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          ssh-keyscan github.com >> "$HOME/.ssh/known_hosts"
+
+      - name: Fetch pinned MSL sources
+        run: |
+          for runtime in legacy decomp; do
+            commit_var=$(printf '%s_COMMIT' "$runtime" | tr '[:lower:]' '[:upper:]')
+            commit=$(eval "printf '%s' \"\$$commit_var\"")
+            mkdir -p "source/$runtime"
+            git -C "source/$runtime" init
+            git -C "source/$runtime" remote add origin git@github.com:dhambly/melee-sim-light.git
+            git -C "source/$runtime" fetch --depth 1 origin "$commit"
+            git -C "source/$runtime" checkout --detach FETCH_HEAD
+            test "$(git -C "source/$runtime" rev-parse HEAD)" = "$commit"
+          done
+
+      - name: Build native wheels
+        run: |
+          uv venv --python 3.12 --seed .venv
+          .venv/bin/python -m pip install --upgrade pip setuptools wheel numpy
+          for runtime in legacy decomp; do
+            mkdir -p "output/$runtime"
+            .venv/bin/python -m pip wheel \
+              --no-deps \
+              --no-build-isolation \
+              --wheel-dir "output/$runtime" \
+              "source/$runtime"
+          done
+
+      - name: Smoke native imports
+        run: |
+          for runtime in legacy decomp; do
+            mkdir -p "extracted/$runtime"
+            wheel=$(find "output/$runtime" -maxdepth 1 -name '*.whl' -print -quit)
+            .venv/bin/python -m zipfile -e "$wheel" "extracted/$runtime"
+          done
+          PYTHONPATH="$PWD/extracted/legacy" .venv/bin/python -c \
+            "import melee_sim, melee_sim._native; import tools.modelplay.state_adapter"
+          PYTHONPATH="$PWD/extracted/decomp" .venv/bin/python -c \
+            "import melee_sim; import tools.migration.replay_checkpoint; import tools.modelplay.phillip_adapter"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msl-${{ matrix.platform }}-cp312
+          path: output/*/*.whl
+          if-no-files-found: error
+          retention-days: 7
