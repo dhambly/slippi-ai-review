@@ -10365,7 +10365,7 @@
           children: (_, i) => (() => {
             var _el$5 = _tmpl$22();
             createRenderEffect((_p$) => {
-              var _v$9 = `${position().x - 2 * (1.5 - i())}%`, _v$10 = `-${position().y}%`, _v$11 = renderData().innerColor;
+              var _v$9 = `${position().x - 2 * (1.5 - i())}%`, _v$10 = `-${position().y - 2}%`, _v$11 = renderData().innerColor;
               _v$9 !== _p$.e && setAttribute(_el$5, "cx", _p$.e = _v$9);
               _v$10 !== _p$.t && setAttribute(_el$5, "cy", _p$.t = _v$10);
               _v$11 !== _p$.a && setAttribute(_el$5, "fill", _p$.a = _v$11);
@@ -10379,7 +10379,7 @@
           })()
         }), (() => {
           var _el$ = _tmpl$2(), _el$2 = _el$.firstChild;
-          _el$.style.setProperty("font", "bold 15px sans-serif");
+          _el$.style.setProperty("font", "bold 34px sans-serif");
           _el$.style.setProperty("transform", "scaleY(-1)");
           createRenderEffect((_p$) => {
             var _v$ = `${position().x}%`, _v$2 = `${position().y + 4}%`, _v$3 = `${Math.floor(renderData().playerState.percent)}%`, _v$4 = renderData().innerColor;
@@ -10397,10 +10397,10 @@
           return _el$;
         })(), (() => {
           var _el$3 = _tmpl$2(), _el$4 = _el$3.firstChild;
-          _el$3.style.setProperty("font", "bold 15px sans-serif");
+          _el$3.style.setProperty("font", "bold 27px sans-serif");
           _el$3.style.setProperty("transform", "scaleY(-1)");
           createRenderEffect((_p$) => {
-            var _v$5 = `${position().x}%`, _v$6 = `${position().y + 7}%`, _v$7 = name(), _v$8 = renderData().innerColor;
+            var _v$5 = `${position().x}%`, _v$6 = `${position().y + 10}%`, _v$7 = name(), _v$8 = renderData().innerColor;
             _v$5 !== _p$.e && setAttribute(_el$3, "x", _p$.e = _v$5);
             _v$6 !== _p$.t && setAttribute(_el$3, "y", _p$.t = _v$6);
             _v$7 !== _p$.a && (_el$4.data = _p$.a = _v$7);

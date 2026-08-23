@@ -43,6 +43,35 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _configure_gpu_budget(*, enable_gpu: bool, duty_cycle: float) -> None:
+    """Keep legacy MSL rollouts within the shared review GPU budget."""
+    if not enable_gpu:
+        return
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", str(duty_cycle))
+
+
+def _acquire_gpu_lock(enable_gpu: bool):
+    if not enable_gpu:
+        return None
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    lock_path = Path(os.environ.get("SLIPPI_AI_REVIEW_GPU_LOCK", "/tmp/slippi_ai_review_gpu.lock"))
+    handle = lock_path.open("a+", encoding="utf-8")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
+
+
+def _throttle_gpu_inference(*, elapsed_s: float, duty_cycle: float) -> float:
+    if duty_cycle >= 1 or elapsed_s <= 0:
+        return 0.0
+    delay_s = elapsed_s * ((1.0 / duty_cycle) - 1.0)
+    time.sleep(delay_s)
+    return delay_s
+
+
 @dataclass(frozen=True)
 class LaneSpec:
     lane_id: int
@@ -99,6 +128,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--slippi-ai-root", type=Path, default=DEFAULT_SLIPPI_AI_ROOT)
     ap.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     ap.add_argument("--enable-gpu", action="store_true")
+    ap.add_argument("--gpu-duty-cycle", type=float, default=0.20)
     ap.add_argument("--out", type=Path, default=Path("outputs") / "msl_takeover_grid" / f"run_{_timestamp()}")
     return ap.parse_args()
 
@@ -266,10 +296,14 @@ def main() -> int:
         raise ValueError("--samples-per-point must be positive")
     if args.rollout_frames <= 0:
         raise ValueError("--rollout-frames must be positive")
+    if not 0 < args.gpu_duty_cycle <= 1:
+        raise ValueError("--gpu-duty-cycle must be in (0, 1]")
 
     out_dir = args.out.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
+    _gpu_lock = _acquire_gpu_lock(args.enable_gpu)
+    _configure_gpu_budget(enable_gpu=args.enable_gpu, duty_cycle=args.gpu_duty_cycle)
 
     setup_msl(args.msl_root)
 
@@ -343,6 +377,7 @@ def main() -> int:
             "rollout_input_build_s": 0.0,
             "rollout_sim_step_s": 0.0,
             "rollout_state_refresh_s": 0.0,
+            "gpu_throttle_s": 0.0,
             "summarize_s": 0.0,
         }
         batch_size = len(chunk)
@@ -396,7 +431,12 @@ def main() -> int:
                     chunk_timings["warmup_force_s"] += time.perf_counter() - phase
                     phase = time.perf_counter()
                     agent.step(games, needs_reset=needs_reset)
-                    chunk_timings["warmup_agent_step_s"] += time.perf_counter() - phase
+                    agent_elapsed = time.perf_counter() - phase
+                    chunk_timings["warmup_agent_step_s"] += agent_elapsed
+                    chunk_timings["gpu_throttle_s"] += _throttle_gpu_inference(
+                        elapsed_s=agent_elapsed,
+                        duty_cycle=args.gpu_duty_cycle if args.enable_gpu else 1.0,
+                    )
                     needs_reset[:] = False
 
             phase = time.perf_counter()
@@ -453,7 +493,12 @@ def main() -> int:
                 chunk_timings["rollout_force_s"] += time.perf_counter() - phase
                 phase = time.perf_counter()
                 flat_model_controllers = agent.step(games, needs_reset=needs_reset)
-                chunk_timings["rollout_agent_step_s"] += time.perf_counter() - phase
+                agent_elapsed = time.perf_counter() - phase
+                chunk_timings["rollout_agent_step_s"] += agent_elapsed
+                chunk_timings["gpu_throttle_s"] += _throttle_gpu_inference(
+                    elapsed_s=agent_elapsed,
+                    duty_cycle=args.gpu_duty_cycle if args.enable_gpu else 1.0,
+                )
                 needs_reset[:] = False
 
                 phase = time.perf_counter()
@@ -617,6 +662,7 @@ def main() -> int:
         "opponentMode": args.opponent_mode,
         "rngMode": args.rng_mode,
         "enableGpu": bool(args.enable_gpu),
+        "gpuDutyCycle": float(args.gpu_duty_cycle) if args.enable_gpu else 0.0,
         "lanesJsonl": str(rows_path),
         "groups": groups,
         "timings": timings,

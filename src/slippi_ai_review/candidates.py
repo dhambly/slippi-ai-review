@@ -15,7 +15,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
-from .paths import JS_DIR, PROJECT_DIR
+from .paths import JS_DIR, PROJECT_DIR, node_executable
 from .stage_geometry import stage_geometry_for_settings
 
 
@@ -285,7 +285,7 @@ def build_timeline(replay: Path, out: Path) -> dict[str, Any]:
     out.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
-            "node",
+            node_executable(),
             str(JS_DIR / "build_phase_timeline.js"),
             "--replay",
             str(replay.resolve()),
@@ -300,7 +300,7 @@ def build_timeline(replay: Path, out: Path) -> dict[str, Any]:
 
 def extract_raw_conversions(replay: Path) -> dict[str, Any]:
     completed = subprocess.run(
-        ["node", "-e", RAW_CONVERSION_EXTRACTOR_JS, str(replay.resolve())],
+        [node_executable(), "-e", RAW_CONVERSION_EXTRACTOR_JS, str(replay.resolve())],
         cwd=WORK_DIR,
         check=True,
         capture_output=True,

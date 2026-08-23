@@ -121,11 +121,38 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--warmup-frames", type=int, default=90)
     ap.add_argument("--defender-delay-frames", type=int, default=60)
     ap.add_argument(
+        "--defender-takeover-mode",
+        choices=(
+            "fixed-delay",
+            "observed-followup",
+            "observed-opponent-followup",
+            "observed-phase-followup",
+        ),
+        default="fixed-delay",
+        help=(
+            "Choose when the replay defender becomes model-controlled. "
+            "Observed modes switch on the second contact in the requested direction, "
+            "counting an opening hit already present at the branch state. Phase mode "
+            "uses opponent damage during disadvantage and analyzed-player damage otherwise."
+        ),
+    )
+    ap.add_argument(
         "--anchor-recorded-contact",
         action="store_true",
         help="For connected punish points, branch after the replay's opening hitlag instead of re-simulating the contact.",
     )
     ap.add_argument("--history-mode", choices=("teacher-forced", "dummy"), default="teacher-forced")
+    ap.add_argument(
+        "--replay-bridge-policy-delay",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Diagnostic mode that postpones physical model control by one policy-delay window. "
+            "Normal takeover uses Phillip's precomputed delayed outputs at the requested frame, "
+            "matching the Dolphin injection path."
+        ),
+    )
+    ap.add_argument("--analyzed-mode", choices=("model", "replay"), default="model")
     ap.add_argument("--opponent-mode", choices=("replay", "neutral"), default="replay")
     ap.add_argument("--rng-mode", choices=("replay", "native"), default="replay")
     ap.add_argument("--sample-temperature", type=float, default=1.0)
@@ -144,6 +171,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--slippi-ai-root", type=Path, default=DEFAULT_SLIPPI_AI_ROOT)
     ap.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     ap.add_argument("--enable-gpu", action="store_true")
+    ap.add_argument(
+        "--gpu-duty-cycle",
+        type=float,
+        default=0.20,
+        help="Maximum average GPU inference duty cycle while --enable-gpu is active (0, 1].",
+    )
     ap.add_argument("--out", type=Path, default=Path("outputs") / "msl_takeover_grid_fast" / f"run_{_timestamp()}")
     return ap.parse_args()
 
@@ -160,6 +193,25 @@ def _disable_gpus_if_needed(enable_gpu: bool) -> None:
     from slippi_ai import eval_lib  # type: ignore
 
     eval_lib.disable_gpus()
+
+
+def _configure_gpu_budget(*, enable_gpu: bool, duty_cycle: float) -> None:
+    """Apply the memory-side portion of the review GPU budget before JAX loads."""
+    if not enable_gpu:
+        return
+    # This is honored by JAX-backed Phillip checkpoints. TensorFlow-backed
+    # checkpoints ignore it, but still receive the compute duty-cycle below.
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", str(duty_cycle))
+
+
+def _throttle_gpu_inference(*, elapsed_s: float, duty_cycle: float) -> float:
+    """Yield after a GPU inference so sustained utilization stays near budget."""
+    if duty_cycle >= 1 or elapsed_s <= 0:
+        return 0.0
+    delay_s = elapsed_s * ((1.0 / duty_cycle) - 1.0)
+    time.sleep(delay_s)
+    return delay_s
 
 
 def _acquire_gpu_lock(enable_gpu: bool):
@@ -209,6 +261,51 @@ def _build_agent(eval_lib, *, state: dict[str, Any], batch_size: int, sample_tem
     )
 
 
+def _replay_bridge_frames(args: argparse.Namespace, agent: Any) -> int:
+    if (
+        args.history_mode != "teacher-forced"
+        or args.analyzed_mode != "model"
+        or not args.replay_bridge_policy_delay
+    ):
+        return 0
+    return max(0, int(agent.delay))
+
+
+def _policy_target_records(records: np.ndarray, *, delay: int, num_records: int) -> np.ndarray:
+    """Return the replay records for the actions generated from these observations."""
+    return np.minimum(
+        np.asarray(records, dtype=np.int64) + max(0, int(delay)),
+        max(0, int(num_records) - 1),
+    )
+
+
+def _policy_force_mask(
+    *,
+    target_frames: np.ndarray,
+    analyzed_boundary_frames: np.ndarray,
+    defender_boundary_frames: np.ndarray,
+    analyzed_idx: int,
+) -> np.ndarray:
+    """Select policy rows whose previous-action belief still belongs to replay.
+
+    Phillip observes frame ``f`` while generating the controller for ``f + delay``.
+    Replay therefore owns the autoregressive controller belief only when that target
+    frame is strictly before the port's physical takeover boundary.
+    """
+    target = np.asarray(target_frames, dtype=np.int64)
+    analyzed = target < np.asarray(analyzed_boundary_frames, dtype=np.int64)
+    defender = target < np.asarray(defender_boundary_frames, dtype=np.int64)
+    batch_size = target.shape[0]
+    mask = np.zeros(batch_size * 2, dtype=np.bool_)
+    if int(analyzed_idx) == 0:
+        mask[:batch_size] = analyzed
+        mask[batch_size:] = defender
+    else:
+        mask[:batch_size] = defender
+        mask[batch_size:] = analyzed
+    return mask
+
+
 def _input_to_controller_batch(input_arr: np.ndarray, *, player_index: int):
     from slippi_ai import types as sa_types  # type: ignore
 
@@ -237,6 +334,38 @@ def _controllers_from_input(input_arr: np.ndarray, *, num_players: int) -> dict[
     }
 
 
+def _controllers_from_policy_input(input_arr: np.ndarray, *, num_players: int) -> dict[int, Any]:
+    """Build Phillip controller observations from Parser-compatible values."""
+    from slippi_ai import types as sa_types  # type: ignore
+
+    controllers: dict[int, Any] = {}
+    for player_index in range(num_players):
+        player = input_arr["p"][:, player_index]
+        buttons = player["buttons"].astype(np.uint16)
+        controllers[player_index + 1] = sa_types.Controller(
+            main_stick=sa_types.Stick(
+                player["main_x"].astype(np.float32),
+                player["main_y"].astype(np.float32),
+            ),
+            c_stick=sa_types.Stick(
+                player["c_x"].astype(np.float32),
+                player["c_y"].astype(np.float32),
+            ),
+            shoulder=player["shoulder"].astype(np.float32),
+            buttons=sa_types.Buttons(
+                **{name: (buttons & np.uint16(bit)) != 0 for name, bit in BUTTON_BITS.items()}
+            ),
+        )
+    return controllers
+
+
+def _replay_policy_controllers(buffers: Any, records: np.ndarray, *, num_players: int) -> dict[int, Any]:
+    policy_stream = getattr(buffers, "policy_controller_t", None)
+    if policy_stream is None:
+        return _controllers_from_input(buffers.prev_input_t[records], num_players=num_players)
+    return _controllers_from_policy_input(policy_stream[records], num_players=num_players)
+
+
 def _stream_ref(
     *,
     stream_path: Path | None,
@@ -246,6 +375,7 @@ def _stream_ref(
     analyzed_port: int,
     defender_port: int,
     defender_takeover_frame: int,
+    model_control_frame: int,
 ) -> dict[str, Any] | None:
     if stream_path is None:
         return None
@@ -256,13 +386,17 @@ def _stream_ref(
         "env": int(env),
         "laneId": int(lane.lane_id),
         "takeoverFrame": int(lane.takeover_frame),
+        "modelControlFrame": int(model_control_frame),
         "endFrame": int(lane.takeover_frame + stream_frames - 1),
         "frames": int(stream_frames),
         "analyzedPort": int(analyzed_port),
         "defenderPort": int(defender_port),
         "defenderTakeoverFrame": int(defender_takeover_frame),
         "notes": (
-            "Both ports are stored from takeoverFrame. Before defenderTakeoverFrame, "
+            "Both ports are stored from takeoverFrame. Phillip normally controls the analyzed "
+            "port from that frame using delayed outputs prepared from replay history. In the "
+            "optional bridge diagnostic, replay continues until modelControlFrame. "
+            "Before defenderTakeoverFrame, "
             "the defender stream contains replay inputs; afterward it contains model inputs. "
             "A divergent model throw may advance defenderTakeoverFrame."
         ),
@@ -313,6 +447,32 @@ def _force_prev_controller(delayed_agent: Any, forced_controller: Any, force_mas
 
     basic_agent._prev_controller = _map2_nt(merge, current, forced)
     return True
+
+
+class _BatchedAnimationFilter:
+    """Vectorized equivalent of slippi_ai.observations.AnimationFilter."""
+
+    def __init__(self, batch_size: int, *, enabled: bool):
+        from slippi_ai import observations  # type: ignore
+
+        self.enabled = bool(enabled)
+        self.tech_actions = np.asarray(observations.TECH_ACTIONS, dtype=np.uint16)
+        self.mask_frames = int(observations.DEFAULT_TECH_MASK_WINDOW)
+        self.prev_action = np.zeros(batch_size, dtype=np.uint16)
+        self.count = np.zeros(batch_size, dtype=np.int16)
+
+    def filter(self, game: Any, needs_reset: np.ndarray) -> None:
+        if not self.enabled:
+            return
+        reset = np.asarray(needs_reset, dtype=np.bool_)
+        self.prev_action[reset] = np.uint16(0)
+        self.count[reset] = np.int16(0)
+        action = np.asarray(game.p1.action, dtype=np.uint16)
+        same = action == self.prev_action
+        self.count = np.where(same, self.count + 1, 0).astype(np.int16)
+        self.prev_action = action.copy()
+        should_mask = np.isin(action, self.tech_actions) & (self.count < self.mask_frames)
+        game.p1.action[...] = np.where(should_mask, self.tech_actions[0], action)
 
 
 def _write_encoded_to_input(
@@ -446,6 +606,23 @@ def _divergent_throw_takeover_mask(
         & np.isin(observed_actions, np.asarray(sorted(_throw_action_ids()), dtype=np.int16))
         & (observed_actions != expected_actions)
         & (int(step) + 1 < takeover_steps)
+    )
+
+
+def _observed_followup_takeover_mask(
+    *,
+    hit_event: np.ndarray,
+    observed_hit_counts: np.ndarray,
+    takeover_steps: np.ndarray,
+    step: int,
+    resolved_mask: np.ndarray,
+) -> np.ndarray:
+    """Switch the defender once the analyzed player's second contact is observed."""
+    return (
+        (~np.asarray(resolved_mask, dtype=np.bool_))
+        & np.asarray(hit_event, dtype=np.bool_)
+        & (np.asarray(observed_hit_counts, dtype=np.int16) >= 2)
+        & (int(step) + 1 < np.asarray(takeover_steps, dtype=np.int32))
     )
 
 
@@ -1289,6 +1466,8 @@ def main() -> int:
     args = parse_args()
     if args.samples_per_point <= 0:
         raise ValueError("--samples-per-point must be positive")
+    if not 0 < args.gpu_duty_cycle <= 1:
+        raise ValueError("--gpu-duty-cycle must be in (0, 1]")
     if args.option_horizon_frames < 0:
         raise ValueError("--option-horizon-frames must be non-negative")
     if args.defense_resolution_extra_frames < 0:
@@ -1315,6 +1494,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     _gpu_lock = _acquire_gpu_lock(args.enable_gpu)
+    _configure_gpu_budget(enable_gpu=args.enable_gpu, duty_cycle=args.gpu_duty_cycle)
 
     setup_msl(args.msl_root)
     if str(args.slippi_ai_root.resolve()) not in sys.path:
@@ -1399,6 +1579,7 @@ def main() -> int:
     if args.dump_controller_streams:
         streams_dir.mkdir(parents=True, exist_ok=True)
 
+    replay_bridge_frames = 0
     for chunk_index, chunk in enumerate(chunks):
         chunk_t0 = time.perf_counter()
         chunk_timings = {
@@ -1408,6 +1589,7 @@ def main() -> int:
             "observation_fill_s": 0.0,
             "force_s": 0.0,
             "agent_step_s": 0.0,
+            "gpu_throttle_s": 0.0,
             "input_write_s": 0.0,
             "sim_step_s": 0.0,
             "summarize_s": 0.0,
@@ -1427,13 +1609,37 @@ def main() -> int:
                 sample_temperature=float(args.sample_temperature),
             )
             agent.start()
+            replay_bridge_frames = _replay_bridge_frames(args, agent)
+            policy_delay = max(0, int(agent.delay))
             game_buffers = GameBatchBuffers(batch_size)
+            animation_filter = _BatchedAnimationFilter(
+                port_batch_size,
+                enabled=bool(agent.observation_config.animation.mask),
+            )
             chunk_timings["build_agent_s"] += time.perf_counter() - phase
 
             viewpoint = np.zeros(batch_size, dtype=np.uint8)
             gamestate_raw = np.zeros((batch_size, gamestate_dtype.itemsize), dtype=np.uint8)
             gamestate = gamestate_raw.view(gamestate_dtype).reshape(batch_size)
             start_records = np.asarray([lane.start_record for lane in chunk], dtype=np.int64)
+            takeover_frames = np.asarray([lane.takeover_frame for lane in chunk], dtype=np.int64)
+            model_control_frames = takeover_frames + int(replay_bridge_frames)
+            if args.analyzed_mode != "model":
+                model_control_frames = np.full(batch_size, np.iinfo(np.int32).max, dtype=np.int64)
+            initial_defender_boundary_frames = np.asarray(
+                [lane.defender_takeover_frame for lane in chunk], dtype=np.int64
+            )
+            disadvantage_lanes = np.asarray(
+                [
+                    str(
+                        ((frame_metadata.get(int(lane.base_frame), {}).get("point_evidence") or {}).get("phase"))
+                        or ""
+                    ).lower()
+                    == "disadvantage"
+                    for lane in chunk
+                ],
+                dtype=np.bool_,
+            )
 
             if args.history_mode == "teacher-forced":
                 phase_warm = time.perf_counter()
@@ -1444,21 +1650,38 @@ def main() -> int:
                     warm_records = np.minimum(warm_records, np.maximum(0, start_records - 1))
                     msl_binding.reseed_seed_rollout(handle, _u8_rows(buffers.seed_t[warm_records]))
                     msl_binding.write_gamestate(handle, viewpoint, gamestate_raw)
-                    current_controllers = _controllers_from_input(
-                        buffers.input_t[warm_records],
-                        num_players=num_players,
+                    # seed_t[i] is post-frame-i. Parser associates it with the
+                    # pre-frame-i policy controller, not input_t[i] (frame i+1).
+                    current_controllers = _replay_policy_controllers(
+                        buffers, warm_records, num_players=num_players
                     )
-                    prev_controllers = _controllers_from_input(
-                        buffers.prev_input_t[warm_records],
-                        num_players=num_players,
+                    policy_records = _policy_target_records(
+                        warm_records,
+                        delay=policy_delay,
+                        num_records=buffers.num_records,
+                    )
+                    prev_controllers = _replay_policy_controllers(
+                        buffers, policy_records, num_players=num_players
+                    )
+                    force_mask = _policy_force_mask(
+                        target_frames=frame_ids[policy_records],
+                        analyzed_boundary_frames=model_control_frames,
+                        defender_boundary_frames=initial_defender_boundary_frames,
+                        analyzed_idx=analyzed_idx,
                     )
                     game_buffers.fill(gamestate, needs_reset, controllers=current_controllers)
+                    animation_filter.filter(game_buffers.game, game_buffers.needs_reset)
                     _force_prev_controller(
                         agent,
                         _concat_port_controllers(prev_controllers, batch_size=batch_size),
-                        np.ones(port_batch_size, dtype=np.bool_),
+                        force_mask,
                     )
+                    agent_started = time.perf_counter()
                     agent.step(game_buffers.game, game_buffers.needs_reset)
+                    chunk_timings["gpu_throttle_s"] += _throttle_gpu_inference(
+                        elapsed_s=time.perf_counter() - agent_started,
+                        duty_cycle=args.gpu_duty_cycle if args.enable_gpu else 1.0,
+                    )
                     needs_reset[:] = False
                 chunk_timings["warmup_s"] += time.perf_counter() - phase_warm
 
@@ -1468,7 +1691,10 @@ def main() -> int:
             msl_binding.debug_write_processed_input(handle, processed_input_u8)
             start_gamestate = gamestate.copy()
             max_rollout_steps = _max_rollout_steps(args)
-            option_steps = min(int(args.option_horizon_frames), max_rollout_steps)
+            option_steps = min(
+                replay_bridge_frames + int(args.option_horizon_frames),
+                max_rollout_steps,
+            )
             initial_actions = _slot_for_source(start_gamestate, analyzed_idx)["action_id"].astype(np.uint16, copy=True)
             expected_throw_values = [
                 _expected_replay_throw_action(frame_metadata.get(int(lane.base_frame), {}))
@@ -1482,6 +1708,8 @@ def main() -> int:
             defender_takeover_reason = np.zeros(batch_size, dtype=np.uint8)
             divergent_throw_action = np.full(batch_size, -1, dtype=np.int16)
             divergent_throw_detected_frame = np.full(batch_size, -1, dtype=np.int32)
+            observed_followup_detected_frame = np.full(batch_size, -1, dtype=np.int32)
+            observed_opponent_followup_detected_frame = np.full(batch_size, -1, dtype=np.int32)
             action_history = np.zeros((option_steps, batch_size), dtype=np.uint16)
             input_history = np.zeros((option_steps, batch_size), dtype=INPUT_DTYPE)
             stream_history = (
@@ -1503,11 +1731,21 @@ def main() -> int:
             true_followup_hits = np.zeros(batch_size, dtype=np.int16)
             first_followup_step = np.full(batch_size, -1, dtype=np.int32)
             last_followup_step = np.full(batch_size, -1, dtype=np.int32)
+            first_damage_dealt_step = np.full(batch_size, -1, dtype=np.int32)
+            first_damage_taken_step = np.full(batch_size, -1, dtype=np.int32)
             initial_combo_constraint, _ = _combo_constraint_masks(
                 start_gamestate,
                 defender_idx=defender_idx,
             )
             combo_started = initial_combo_constraint.copy()
+            # Advantage branches commonly begin on the recorded opener's first
+            # hitlag frame. Count it so the next contact is hit two.
+            observed_analyzed_hit_counts = initial_combo_constraint.astype(np.int16)
+            initial_analyzed_constraint, _ = _combo_constraint_masks(
+                start_gamestate,
+                defender_idx=analyzed_idx,
+            )
+            observed_opponent_hit_counts = initial_analyzed_constraint.astype(np.int16)
             previous_defender = _slot_for_source(start_gamestate, defender_idx)
             previous_defender_percent = previous_defender["percent"].astype(np.float32, copy=True)
             previous_defender_stocks = previous_defender["stocks"].astype(np.int16, copy=True)
@@ -1521,7 +1759,9 @@ def main() -> int:
             defender_ko_confirmed = np.zeros(batch_size, dtype=np.bool_)
             analyzed_ko_confirmed = np.zeros(batch_size, dtype=np.bool_)
             last_input = buffers.prev_input_t[start_records].copy()
-            last_controllers = _controllers_from_input(last_input, num_players=num_players)
+            last_controllers = _replay_policy_controllers(
+                buffers, start_records, num_players=num_players
+            )
             prev_input = last_input.copy()
             needs_reset = np.zeros(batch_size, dtype=np.bool_)
             if args.history_mode == "dummy":
@@ -1531,26 +1771,27 @@ def main() -> int:
             for step in range(max_rollout_steps):
                 phase = time.perf_counter()
                 game_buffers.fill(gamestate, needs_reset, controllers=last_controllers)
+                animation_filter.filter(game_buffers.game, game_buffers.needs_reset)
                 chunk_timings["observation_fill_s"] += time.perf_counter() - phase
 
+                replay_records = np.minimum(start_records + step, buffers.num_records - 1)
                 force_mask = np.zeros(port_batch_size, dtype=np.bool_)
                 if args.history_mode == "teacher-forced":
-                    if step == 0:
-                        if args.analyzed_port == 1:
-                            force_mask[:batch_size] = True
-                        else:
-                            force_mask[batch_size:] = True
-                    defender_replay_mask = step < defender_takeover_steps
-                    if defender_idx == 0:
-                        force_mask[:batch_size] = defender_replay_mask
-                    else:
-                        force_mask[batch_size:] = defender_replay_mask
+                    policy_records = _policy_target_records(
+                        replay_records,
+                        delay=policy_delay,
+                        num_records=buffers.num_records,
+                    )
+                    force_mask = _policy_force_mask(
+                        target_frames=frame_ids[policy_records],
+                        analyzed_boundary_frames=model_control_frames,
+                        defender_boundary_frames=takeover_frames + defender_takeover_steps.astype(np.int64),
+                        analyzed_idx=analyzed_idx,
+                    )
                 if bool(np.any(force_mask)):
                     phase = time.perf_counter()
-                    replay_records = np.minimum(start_records + step, buffers.num_records - 1)
-                    prev_controllers = _controllers_from_input(
-                        buffers.prev_input_t[replay_records],
-                        num_players=num_players,
+                    prev_controllers = _replay_policy_controllers(
+                        buffers, policy_records, num_players=num_players
                     )
                     _force_prev_controller(
                         agent,
@@ -1561,23 +1802,31 @@ def main() -> int:
 
                 phase = time.perf_counter()
                 outputs = agent.step(game_buffers.game, game_buffers.needs_reset)
-                chunk_timings["agent_step_s"] += time.perf_counter() - phase
+                agent_elapsed = time.perf_counter() - phase
+                chunk_timings["agent_step_s"] += agent_elapsed
+                chunk_timings["gpu_throttle_s"] += _throttle_gpu_inference(
+                    elapsed_s=agent_elapsed,
+                    duty_cycle=args.gpu_duty_cycle if args.enable_gpu else 1.0,
+                )
                 needs_reset[:] = False
 
                 phase = time.perf_counter()
                 current_input = np.zeros(batch_size, dtype=INPUT_DTYPE)
-                replay_records = np.minimum(start_records + step, buffers.num_records - 1)
                 if args.opponent_mode == "replay":
                     current_input[...] = buffers.input_t[replay_records]
                 analyzed_source = slice(0, batch_size) if analyzed_idx == 0 else slice(batch_size, port_batch_size)
-                _write_encoded_to_input(
-                    current_input,
-                    player_index=analyzed_idx,
-                    encoded_controller=outputs.controller_state,
-                    source_slice=analyzed_source,
-                    axis_spacing=axis_spacing,
-                    shoulder_spacing=shoulder_spacing,
-                )
+                analyzed_bridge_active = step < replay_bridge_frames
+                if analyzed_bridge_active:
+                    current_input["p"][:, analyzed_idx] = buffers.input_t[replay_records]["p"][:, analyzed_idx]
+                elif args.analyzed_mode == "model":
+                    _write_encoded_to_input(
+                        current_input,
+                        player_index=analyzed_idx,
+                        encoded_controller=outputs.controller_state,
+                        source_slice=analyzed_source,
+                        axis_spacing=axis_spacing,
+                        shoulder_spacing=shoulder_spacing,
+                    )
                 defender_model_mask = step >= defender_takeover_steps
                 if bool(np.any(defender_model_mask)):
                     replay_defender_input = current_input["p"][:, defender_idx].copy()
@@ -1659,6 +1908,17 @@ def main() -> int:
                     | analyzed_ko_event
                 )
                 combo_reversed |= attacker_damage_event
+                analyzed_contact_event = hit_event | defender_ko_event
+                first_damage_dealt_step = np.where(
+                    analyzed_contact_event & (first_damage_dealt_step < 0),
+                    int(step + 1),
+                    first_damage_dealt_step,
+                )
+                first_damage_taken_step = np.where(
+                    attacker_damage_event & (first_damage_taken_step < 0),
+                    int(step + 1),
+                    first_damage_taken_step,
+                )
                 if bool(np.any(hit_event)):
                     followup_damage += np.where(hit_event, damage_delta, 0.0).astype(np.float32)
                     followup_hits += hit_event.astype(np.int16)
@@ -1671,6 +1931,51 @@ def main() -> int:
                     )
                     last_followup_step = np.where(hit_event, int(step + 1), last_followup_step)
                     combo_started |= hit_event
+
+                observed_analyzed_hit_counts += hit_event.astype(np.int16)
+                observed_opponent_hit_counts += attacker_damage_event.astype(np.int16)
+                analyzed_followup_enabled = (
+                    np.ones(batch_size, dtype=np.bool_)
+                    if args.defender_takeover_mode == "observed-followup"
+                    else ~disadvantage_lanes
+                    if args.defender_takeover_mode == "observed-phase-followup"
+                    else np.zeros(batch_size, dtype=np.bool_)
+                )
+                opponent_followup_enabled = (
+                    np.ones(batch_size, dtype=np.bool_)
+                    if args.defender_takeover_mode == "observed-opponent-followup"
+                    else disadvantage_lanes
+                    if args.defender_takeover_mode == "observed-phase-followup"
+                    else np.zeros(batch_size, dtype=np.bool_)
+                )
+                if bool(np.any(analyzed_followup_enabled)):
+                    observed_followup = _observed_followup_takeover_mask(
+                        hit_event=hit_event & analyzed_followup_enabled,
+                        observed_hit_counts=observed_analyzed_hit_counts,
+                        takeover_steps=defender_takeover_steps,
+                        step=step,
+                        resolved_mask=resolved_mask,
+                    )
+                    if bool(np.any(observed_followup)):
+                        defender_takeover_steps[observed_followup] = int(step + 1)
+                        defender_takeover_reason[observed_followup] = np.uint8(2)
+                        observed_followup_detected_frame[observed_followup] = gamestate["frame_id"][
+                            observed_followup
+                        ].astype(np.int32)
+                if bool(np.any(opponent_followup_enabled)):
+                    observed_opponent_followup = _observed_followup_takeover_mask(
+                        hit_event=attacker_damage_event & opponent_followup_enabled,
+                        observed_hit_counts=observed_opponent_hit_counts,
+                        takeover_steps=defender_takeover_steps,
+                        step=step,
+                        resolved_mask=resolved_mask,
+                    )
+                    if bool(np.any(observed_opponent_followup)):
+                        defender_takeover_steps[observed_opponent_followup] = int(step + 1)
+                        defender_takeover_reason[observed_opponent_followup] = np.uint8(3)
+                        observed_opponent_followup_detected_frame[
+                            observed_opponent_followup
+                        ] = gamestate["frame_id"][observed_opponent_followup].astype(np.int32)
 
                 combo_escape = _combo_escape_masks(
                     gamestate,
@@ -1823,6 +2128,40 @@ def main() -> int:
             }
             for env, lane in enumerate(chunk):
                 actual_defender_takeover_frame = int(lane.takeover_frame + defender_takeover_steps[env])
+                defender_reason = {
+                    1: "divergent_throw",
+                    2: "observed_followup",
+                    3: "observed_opponent_followup",
+                }.get(int(defender_takeover_reason[env]), "fixed_delay")
+                defender_detected_frame = (
+                    int(divergent_throw_detected_frame[env])
+                    if int(defender_takeover_reason[env]) == 1
+                    else int(observed_followup_detected_frame[env])
+                    if int(defender_takeover_reason[env]) == 2
+                    else int(observed_opponent_followup_detected_frame[env])
+                    if int(defender_takeover_reason[env]) == 3
+                    else -1
+                )
+                dealt_step = int(first_damage_dealt_step[env])
+                taken_step = int(first_damage_taken_step[env])
+                dealt_frame = lane.takeover_frame + dealt_step - 1 if dealt_step >= 0 else None
+                taken_frame = lane.takeover_frame + taken_step - 1 if taken_step >= 0 else None
+                if dealt_step < 0 and taken_step < 0:
+                    first_contact_by = None
+                    first_contact_step = None
+                    first_contact_frame = None
+                elif dealt_step >= 0 and (taken_step < 0 or dealt_step < taken_step):
+                    first_contact_by = "analyzed"
+                    first_contact_step = dealt_step
+                    first_contact_frame = dealt_frame
+                elif taken_step >= 0 and (dealt_step < 0 or taken_step < dealt_step):
+                    first_contact_by = "opponent"
+                    first_contact_step = taken_step
+                    first_contact_frame = taken_frame
+                else:
+                    first_contact_by = "trade"
+                    first_contact_step = dealt_step
+                    first_contact_frame = dealt_frame
                 baseline = frame_metadata.get(int(lane.base_frame), {})
                 anchor_frame = contact_anchor_frames.get(int(lane.base_frame))
                 if anchor_frame is not None:
@@ -1855,13 +2194,22 @@ def main() -> int:
                     damage_delta=damage_delta_vs_replay,
                 )
                 lane_option_steps = min(option_steps, max(1, int(resolved_step[env])))
+                option_start_step = min(replay_bridge_frames, lane_option_steps)
+                option_initial_action = (
+                    int(initial_actions[env])
+                    if option_start_step == 0
+                    else int(action_history[option_start_step - 1, env])
+                )
                 option = _option_summary(
-                    action_ids=[int(value) for value in action_history[:lane_option_steps, env]],
+                    action_ids=[
+                        int(value)
+                        for value in action_history[option_start_step:lane_option_steps, env]
+                    ],
                     input_tokens=[
                         _input_token(input_history[step]["p"][env, analyzed_idx])
-                        for step in range(lane_option_steps)
+                        for step in range(option_start_step, lane_option_steps)
                     ],
-                    initial_action_id=int(initial_actions[env]),
+                    initial_action_id=option_initial_action,
                     max_action_segments=int(args.option_max_action_segments),
                     max_input_segments=int(args.option_max_input_segments),
                 )
@@ -1874,10 +2222,12 @@ def main() -> int:
                         "sampleIndex": int(lane.sample_index),
                         "startRecord": int(lane.start_record),
                         "takeoverFrame": int(lane.takeover_frame),
+                        "modelControlFrame": int(lane.takeover_frame + replay_bridge_frames),
+                        "replayBridgeFrames": int(replay_bridge_frames),
                         "recordedContactAnchorFrame": anchor_frame,
                         "defenderTakeoverFrame": actual_defender_takeover_frame,
                         "defenderTakeover": {
-                            "reason": "divergent_throw" if int(defender_takeover_reason[env]) == 1 else "fixed_delay",
+                            "reason": defender_reason,
                             "expectedReplayThrowActionId": (
                                 int(expected_replay_throw_actions[env])
                                 if expected_replay_throw_actions[env] >= 0
@@ -1899,8 +2249,8 @@ def main() -> int:
                                 else None
                             ),
                             "detectedFrame": (
-                                int(divergent_throw_detected_frame[env])
-                                if divergent_throw_detected_frame[env] >= 0
+                                defender_detected_frame
+                                if defender_detected_frame >= 0
                                 else None
                             ),
                         },
@@ -1947,6 +2297,15 @@ def main() -> int:
                         },
                         "damageDealt": round(float(dealt[env]), 3),
                         "damageTaken": round(float(taken[env]), 3),
+                        "neutralContact": {
+                            "firstContactBy": first_contact_by,
+                            "firstContactStep": first_contact_step,
+                            "firstContactFrame": first_contact_frame,
+                            "firstDamageDealtStep": dealt_step if dealt_step >= 0 else None,
+                            "firstDamageDealtFrame": dealt_frame,
+                            "firstDamageTakenStep": taken_step if taken_step >= 0 else None,
+                            "firstDamageTakenFrame": taken_frame,
+                        },
                         "followupDamage": round(float(followup_damage[env]), 3),
                         "followupHits": int(followup_hits[env]),
                         "trueFollowupHits": int(true_followup_hits[env]),
@@ -1982,6 +2341,7 @@ def main() -> int:
                             analyzed_port=int(args.analyzed_port),
                             defender_port=defender_idx + 1,
                             defender_takeover_frame=actual_defender_takeover_frame,
+                            model_control_frame=int(lane.takeover_frame + replay_bridge_frames),
                         ),
                     }
                 )
@@ -2040,6 +2400,7 @@ def main() -> int:
         "samplesPerPoint": int(args.samples_per_point),
         "laneCount": len(lane_specs),
         "maxBatchLanes": int(args.max_batch_lanes),
+        "gpuDutyCycle": float(args.gpu_duty_cycle) if args.enable_gpu else 0.0,
         "rolloutFrames": int(args.rollout_frames),
         "maxRolloutFrames": _max_rollout_steps(args),
         "defenseResolutionExtraFrames": int(args.defense_resolution_extra_frames),
@@ -2056,9 +2417,12 @@ def main() -> int:
         "unresolvedDefensePenalty": float(args.unresolved_defense_penalty),
         "warmupFrames": int(args.warmup_frames),
         "defenderDelayFrames": int(args.defender_delay_frames),
-        "defenderTakeoverMode": "fixed-delay-or-divergent-throw",
+        "defenderTakeoverMode": args.defender_takeover_mode,
         "defenderTakeoverReasonCounts": defender_takeover_reason_counts,
         "historyMode": args.history_mode,
+        "replayBridgePolicyDelay": bool(args.replay_bridge_policy_delay),
+        "replayBridgeFrames": int(replay_bridge_frames),
+        "analyzedMode": args.analyzed_mode,
         "opponentMode": args.opponent_mode,
         "rngMode": args.rng_mode,
         "sampleTemperature": float(args.sample_temperature),

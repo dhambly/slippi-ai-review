@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import time
@@ -15,6 +16,7 @@ from typing import Any
 
 from .config import load_settings
 from .paths import PROJECT_DIR, module_command
+from .practice_start import select_practice_start
 
 
 WORK_DIR = PROJECT_DIR
@@ -30,7 +32,7 @@ INTERNAL_FILENAME = "TMREC_CODEX_AUTOLOAD"
 LAUNCH_STATE = SETTINGS.data_dir / "training_mode_ce_state.json"
 DEFAULT_PREROLL_FRAMES = 30
 MAX_PRACTICE_LEADIN_FRAMES = 200
-SCENARIO_MODES = ("replay", "phillip")
+SCENARIO_MODES = ("replay", "phillip", "variations")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -84,16 +86,16 @@ def derive_practice_window(
     presentation = baseline.get("presentation_segment") or {}
     opening_move = baseline.get("sequence_opening_move") or {}
     opening_candidates = [
-        presentation.get("openingFrame"),
         opening_move.get("frame"),
         baseline.get("segment_start_frame"),
+        presentation.get("openingFrame"),
     ]
     valid_openings = [
         int(frame)
         for frame in opening_candidates
         if frame is not None and int(frame) <= takeover_frame
     ]
-    opening_frame = min(valid_openings) if valid_openings else takeover_frame
+    opening_frame = valid_openings[0] if valid_openings else takeover_frame
     practice_start_frame = max(
         -123,
         takeover_frame - MAX_PRACTICE_LEADIN_FRAMES,
@@ -111,8 +113,9 @@ def build_tm_replay_command(
     duration: int,
     display_name: str,
     human_port: int,
+    cpu_handoff_frame: int | None = None,
 ) -> list[str]:
-    return [
+    command = [
         str(tm_replay.resolve()),
         "--slp-file",
         str(synthetic_slp),
@@ -134,6 +137,9 @@ def build_tm_replay_command(
         "--internal-name",
         INTERNAL_FILENAME,
     ]
+    if cpu_handoff_frame is not None:
+        command.extend(("--cpu-handoff-frame", str(cpu_handoff_frame)))
+    return command
 
 
 def run_logged(command: list[str], log_path: Path, *, cwd: Path = WORK_DIR) -> float:
@@ -267,6 +273,17 @@ def parse_args() -> argparse.Namespace:
         help="replay preserves both original controller streams; phillip applies the staged MSL rollout",
     )
     parser.add_argument("--preroll-frames", type=int, default=DEFAULT_PREROLL_FRAMES)
+    parser.add_argument(
+        "--variation-start-frame",
+        type=int,
+        help="First Slippi frame controlled by Training Mode CPU logic in variations mode",
+    )
+    parser.add_argument(
+        "--variation-source",
+        choices=("replay", "rollout"),
+        default="replay",
+        help="Controller trajectory used before the random-defense handoff",
+    )
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--card-dir", type=Path, default=DEFAULT_CARD_DIR)
     parser.add_argument("--tm-replay", type=Path, default=DEFAULT_TM_REPLAY)
@@ -291,19 +308,64 @@ def main() -> None:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    baseline = target.get("replay_baseline") or {}
+    opening_move = baseline.get("sequence_opening_move") or {}
+    opening_action_frame = int(opening_move.get("actionStartFrame") or opening_frame)
+    analyzed_port = int(stream.get("analyzedPort") or queue.get("controlled_port") or 0)
+    defender_port = int(stream.get("defenderPort") or 0)
+    source_replay = host_path(queue.get("replay") or "").resolve()
+    selection_started = time.perf_counter()
+    start_selection: dict[str, Any]
+    try:
+        if analyzed_port < 1 or defender_port < 1 or not source_replay.is_file():
+            raise ValueError("source replay or player ports are unavailable")
+        decision = select_practice_start(
+            source_replay,
+            players={analyzed_port - 1, defender_port - 1},
+            takeover_frame=takeover_frame,
+            opening_frame=opening_frame,
+            opening_action_frame=opening_action_frame,
+            preroll_frames=args.preroll_frames,
+            maximum_leadin_frames=MAX_PRACTICE_LEADIN_FRAMES,
+            default_frame=practice_start_frame,
+            opening_type=str(baseline.get("opening_type") or ""),
+        )
+        practice_start_frame = decision.frame
+        start_selection = decision.to_dict()
+        if decision.mode == "default_no_stable_candidate":
+            raise ValueError(
+                f"no restorable playback start was found within {MAX_PRACTICE_LEADIN_FRAMES} frames"
+            )
+    except (OSError, ValueError, struct.error) as exc:
+        raise SystemExit(f"Training Mode export blocked: {exc}") from exc
+    selection_seconds = time.perf_counter() - selection_started
     rollout_duration = end_frame - takeover_frame + 1
     duration = end_frame - practice_start_frame + 1
     if duration <= 0 or duration > 3600:
         raise SystemExit(f"Invalid controller stream duration: {duration} frames")
-    human_port = int(stream.get("analyzedPort") or queue.get("controlled_port") or 0)
+    human_port = analyzed_port
     if human_port < 1 or human_port > 4:
         raise SystemExit(f"Invalid analyzed port: {human_port}")
+    variation_start_frame = None
+    if args.scenario_mode == "variations":
+        variation_start_frame = int(
+            args.variation_start_frame if args.variation_start_frame is not None else opening_frame
+        )
+        if variation_start_frame <= practice_start_frame or variation_start_frame > end_frame:
+            raise SystemExit(
+                f"Variation start frame must be within {practice_start_frame + 1}..{end_frame}"
+            )
+    variation_source = args.variation_source if args.scenario_mode == "variations" else None
+    uses_rollout = args.scenario_mode == "phillip" or variation_source == "rollout"
 
     out_dir = (
         args.out_dir
         or queue_path.parent
         / "training_mode"
-        / f"target_{args.target_index:02d}_route_{args.alternative_index:02d}_{args.scenario_mode}"
+        / (
+            f"target_{args.target_index:02d}_route_{args.alternative_index:02d}_{args.scenario_mode}"
+            + (f"_{variation_source}" if variation_source else "")
+        )
     ).resolve()
     logs_dir = out_dir / "logs"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -332,14 +394,21 @@ def main() -> None:
         "--max-frames",
         str(rollout_duration),
         "--patch-mode",
-        "none" if args.scenario_mode == "replay" else "full",
+        "full" if uses_rollout else "none",
     )
-    timings = {"syntheticSlpSeconds": run_logged(export_command, logs_dir / "synthetic_slp.log")}
+    timings = {
+        "practiceStartSelectionSeconds": selection_seconds,
+        "syntheticSlpSeconds": run_logged(export_command, logs_dir / "synthetic_slp.log"),
+    }
 
     display_name = (
         f"CODEX REPLAY s{practice_start_frame}"
         if args.scenario_mode == "replay"
-        else f"CODEX P{human_port} s{practice_start_frame} t{takeover_frame}"
+        else (
+            f"CODEX RND {'MSL' if variation_source == 'rollout' else 'RPL'} s{practice_start_frame} f{variation_start_frame}"
+            if args.scenario_mode == "variations"
+            else f"CODEX P{human_port} s{practice_start_frame} t{takeover_frame}"
+        )
     )
     tm_command = build_tm_replay_command(
         args.tm_replay,
@@ -349,6 +418,7 @@ def main() -> None:
         duration=duration,
         display_name=display_name,
         human_port=human_port,
+        cpu_handoff_frame=variation_start_frame,
     )
     tm_replay_log = logs_dir / "tm_replay.log"
     timings["gciExportSeconds"] = run_logged(tm_command, tm_replay_log)
@@ -378,15 +448,18 @@ def main() -> None:
         "targetIndex": args.target_index,
         "alternativeIndex": args.alternative_index,
         "scenarioMode": args.scenario_mode,
+        "variationSource": variation_source,
         "laneId": lane.get("laneId"),
         "requestedPracticeStartFrame": practice_start_frame,
         "practiceStartFrame": safe_start_frame,
+        "practiceStartSelection": start_selection,
         "openingHitFrame": opening_frame,
         "openingHitIncluded": safe_start_frame <= opening_frame,
         "preRollFrames": max(0, opening_frame - safe_start_frame),
         "omittedContextFrames": max(0, safe_start_frame - opening_frame),
         "takeoverLeadInFrames": takeover_frame - safe_start_frame,
-        "takeoverFrame": takeover_frame if args.scenario_mode == "phillip" else None,
+        "takeoverFrame": takeover_frame if uses_rollout else None,
+        "variationStartFrame": variation_start_frame,
         "endFrame": end_frame,
         "durationFrames": end_frame - safe_start_frame + 1,
         "rolloutDurationFrames": rollout_duration,
@@ -395,7 +468,7 @@ def main() -> None:
         "cpuPort": stream.get("defenderPort"),
         "cpuMode": "playback",
         "defenderTakeoverFrame": (
-            stream.get("defenderTakeoverFrame") if args.scenario_mode == "phillip" else None
+            stream.get("defenderTakeoverFrame") if uses_rollout else None
         ),
         "syntheticSlp": str(synthetic_slp),
         "generatedGci": str(generated_gci),

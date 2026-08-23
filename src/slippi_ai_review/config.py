@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,11 +18,15 @@ class Settings:
     data_dir: Path = DEFAULT_DATA_DIR
     model: Path | None = None
     msl_root: Path | None = None
+    msl_decomp_root: Path | None = None
     slippi_ai_root: Path | None = None
     melee_iso: Path | None = None
-    micromamba: str = "/home/derick/.local/bin/micromamba"
-    msl_env: str = "/home/derick/.local/envs/msl-gpu"
-    cuda_library_path: str = "/usr/lib/wsl/lib"
+    simulation_backend: str = "legacy"
+    runtime_mode: str = "auto"
+    runtime_python: str = sys.executable
+    micromamba: str = "micromamba"
+    msl_env: str = ""
+    cuda_library_path: str = ""
     tm_replay: Path | None = None
     ce_iso: Path | None = None
     dolphin: Path | None = None
@@ -38,14 +43,34 @@ def load_settings(path: Path | None = None) -> Settings:
     if config_path.is_file():
         payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
     paths = payload.get("paths") or {}
+    runtime = payload.get("runtime") or {}
     wsl = payload.get("wsl") or {}
     training = payload.get("training_mode") or {}
     return Settings(
         data_dir=_path(os.environ.get("SLIPPI_REVIEW_DATA_DIR") or paths.get("data_dir")) or DEFAULT_DATA_DIR,
         model=_path(os.environ.get("SLIPPI_REVIEW_MODEL") or paths.get("model")),
         msl_root=_path(os.environ.get("SLIPPI_REVIEW_MSL_ROOT") or paths.get("msl_root")),
+        msl_decomp_root=_path(
+            os.environ.get("SLIPPI_REVIEW_MSL_DECOMP_ROOT")
+            or paths.get("msl_decomp_root")
+        ),
         slippi_ai_root=_path(os.environ.get("SLIPPI_REVIEW_SLIPPI_AI_ROOT") or paths.get("slippi_ai_root")),
         melee_iso=_path(os.environ.get("SLIPPI_REVIEW_MELEE_ISO") or paths.get("melee_iso")),
+        simulation_backend=str(
+            os.environ.get("SLIPPI_REVIEW_SIMULATION_BACKEND")
+            or runtime.get("simulation_backend")
+            or Settings.simulation_backend
+        ),
+        runtime_mode=str(
+            os.environ.get("SLIPPI_REVIEW_RUNTIME")
+            or runtime.get("mode")
+            or Settings.runtime_mode
+        ),
+        runtime_python=str(
+            os.environ.get("SLIPPI_REVIEW_PYTHON")
+            or runtime.get("python")
+            or Settings.runtime_python
+        ),
         micromamba=str(wsl.get("micromamba") or Settings.micromamba),
         msl_env=str(wsl.get("environment") or Settings.msl_env),
         cuda_library_path=str(wsl.get("cuda_library_path") or Settings.cuda_library_path),

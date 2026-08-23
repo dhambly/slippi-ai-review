@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+from .disadvantage_report import write_placeholder
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -80,6 +82,7 @@ def interactive_url(route: dict[str, Any]) -> str:
         "replay": route.get("replay_trace"),
         "agent": route.get("agent_trace"),
         "switch": int(route.get("switch_frame") or 0),
+        "takeover": int(route.get("model_control_frame") or route.get("switch_frame") or 0),
         "defenderSwitch": int(route.get("defender_switch_frame") or 0),
         "start": int(route.get("start_frame") or 0),
         "frames": int(route.get("frame_count") or 1),
@@ -151,6 +154,19 @@ def insertion_text(item: dict[str, Any], *, display_index: int) -> dict[str, str
     }
 
 
+def review_verdict(baseline: dict[str, Any], lane: dict[str, Any]) -> tuple[str, str]:
+    """Describe the displayed lane without assuming every selected moment is a mistake."""
+    replay_kill = bool(baseline.get("original_followup_kill"))
+    replay_damage = float(baseline.get("original_followup_damage") or 0.0)
+    replay_hits = int(baseline.get("original_followup_hits") or 0)
+    model_kill = int(lane.get("defenderStocksLost") or 0) > 0
+    model_damage = float(lane.get("followupDamage") or 0.0)
+    model_hits = int(lane.get("followupHits") or 0)
+    if (replay_kill and not model_kill) or (replay_damage >= model_damage and replay_hits >= model_hits and replay_kill == model_kill):
+        return "Replay held up", "Good punish: the recorded continuation matched or beat this Phillip branch."
+    return "Phillip found a branch", "Compare the branches and decide whether the extra conversion is reproducible."
+
+
 def is_legacy_slp_version(value: Any) -> bool:
     if not isinstance(value, str):
         return False
@@ -194,6 +210,17 @@ def practice_actions_html(*, legacy_slp: bool) -> str:
             </button>
             <button type="button" class="practice-ce" data-scenario-mode="phillip"{title}>
               <span>Phillip rollout in CE</span>
+              {warning}
+            </button>
+            <span class="variation-frame" title="Random defense starts at the exact frame currently shown in the clip. Replay inputs are used before that frame, then Training Mode CE controls the defender.">
+              Random defense at current frame <span class="info-mark" aria-hidden="true">?</span>
+            </span>
+            <span class="variation-source" role="group" aria-label="Playback before random defense" title="Choose whether the scenario follows the original replay or the selected Phillip rollout before random defense takes over.">
+              <button type="button" class="variation-source-option active" data-variation-source="replay" aria-pressed="true">Replay</button>
+              <button type="button" class="variation-source-option" data-variation-source="rollout" aria-pressed="false">Rollout</button>
+            </span>
+            <button type="button" class="practice-ce" data-scenario-mode="variations" title="Random defense starts at the exact frame currently shown in the clip. Replay inputs are used before that frame, then Training Mode CE controls the defender.">
+              <span>Random defense in CE</span>
               {warning}
             </button>
             <span class="practice-status" role="status" aria-live="polite"></span>
@@ -292,20 +319,21 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
         lane_hits = int(lane.get("followupHits") or 0)
         lane_damage = float(lane.get("followupDamage") or 0.0)
         lane_kill = int(lane.get("defenderStocksLost") or 0) > 0
+        verdict_title, verdict_detail = review_verdict(baseline, lane)
         resolution = result.get("resolution") or lane.get("resolution") or {}
+        interactive = result.get("interactive") or {}
         clip = result.get("consolidated_clip") or result.get("side_by_side")
         clip_src = relative_media(clip, out)
         poster_src = relative_media(result.get("poster"), out)
         poster_attr = f' poster="{esc(poster_src)}"' if poster_src else ""
         clip_html = (
-            f'<video controls preload="metadata" playsinline src="{esc(clip_src)}"{poster_attr}></video>'
+            f'<video controls preload="metadata" playsinline data-start-frame="{int(interactive.get("start_frame") or 0)}" src="{esc(clip_src)}"{poster_attr}></video>'
             if clip_src
             else '<div class="missing-video">Open this report with open_review.cmd to use the interactive viewer.</div>'
         )
-        interactive = result.get("interactive") or {}
         interactive_src = interactive_url(interactive) if interactive else ""
         interactive_html = (
-            f'<div class="interactive-shell" data-start-frame="{int(interactive.get("start_frame") or 0)}">'
+            f'<div class="interactive-shell" data-start-frame="{int(interactive.get("start_frame") or 0)}" data-current-relative-frame="0">'
             f'<iframe loading="lazy" allowfullscreen title="Interactive comparison for frame {frame}" '
             f'data-src="{esc(interactive_src)}"></iframe>'
             f'<div class="dormant-poster" aria-hidden="true">'
@@ -329,6 +357,7 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
             insertion_buttons.append(
                 f'<button type="button" class="insertion-option{" active" if active_insertion else ""}" '
                 f'data-insertion-id="{insertion_id}" data-target-index="{insertion["index"]}" '
+                f'data-variation-frame="{int(((insertion["baseline"].get("sequence_opening_move") or {}).get("frame")) or insertion["frame"])}" '
                 f'data-opening="{esc(insertion_view["move"])}" '
                 f'data-signature="{esc(insertion_view["signature"])}" data-heading="{esc(insertion_view["heading"])}" '
                 f'data-eyebrow="{esc(insertion_view["eyebrow"])}" data-rank="{esc(insertion_view["rank"])}" '
@@ -378,7 +407,7 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
         terminal_frame = resolution.get("frame")
         terminal_text = terminal + (f" · f{int(terminal_frame)}" if terminal_frame is not None else "")
         sections.append(f"""
-        <article id="{anchor}" class="moment" data-category="{esc(category)}" data-frame="{scenario_frame}" data-rank="{int(option.get('selectionRank') or display_index)}" data-current-opening="{esc(move)}" data-current-target-index="{item['index']}" data-current-alternative-index="0">
+        <article id="{anchor}" class="moment" data-category="{esc(category)}" data-frame="{scenario_frame}" data-rank="{int(option.get('selectionRank') or display_index)}" data-current-opening="{esc(move)}" data-current-target-index="{item['index']}" data-current-alternative-index="0" data-variation-frame="{int(((baseline.get('sequence_opening_move') or {}).get('frame')) or frame)}">
           <header class="moment-header">
             <div>
               <p class="eyebrow">{display_index:02d} · {esc(category)} · {elapsed(frame)} elapsed · f{frame}</p>
@@ -387,6 +416,7 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
             <span class="rank">{esc(rank_text)}</span>
           </header>
           {interactive_html}
+          <div class="verdict"><strong>{esc(verdict_title)}</strong><span>{esc(verdict_detail)}</span></div>
           {insertion_html}
           {route_html}
           {practice_actions}
@@ -459,6 +489,13 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
     .topbar {{ position:sticky; top:0; z-index:10; display:flex; align-items:center; gap:18px; min-height:58px; padding:9px 22px; color:var(--ink); background:#0b0d0c; border-bottom:3px solid #4cbd82; }}
     .topbar h1 {{ margin:0; font-size:17px; font-weight:700; letter-spacing:0; }}
     .topbar p {{ margin:0; color:var(--muted); font-size:12px; }}
+    .review-tabs {{ display:flex; align-self:stretch; align-items:center; gap:4px; }}
+    .review-tabs a {{ padding:8px 10px; border-bottom:2px solid transparent; color:var(--muted); font-size:12px; font-weight:700; text-decoration:none; }}
+    .review-tabs a.active {{ border-color:var(--green); color:var(--ink); }}
+    .review-tabs a:hover,.review-tabs a:focus {{ color:var(--ink); outline:none; }}
+    .phase-tabs {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; max-width:1500px; margin:0 auto; border:1px solid var(--line); border-top:0; background:var(--line); }}
+    .phase-tabs a {{ display:flex; justify-content:center; align-items:center; min-height:48px; padding:9px 12px; color:var(--muted); background:var(--white); font-size:13px; font-weight:800; text-decoration:none; }}
+    .phase-tabs a.active {{ color:var(--ink); background:#1c3024; box-shadow:inset 0 -3px var(--green); }} .phase-tabs a:hover,.phase-tabs a:focus {{ color:var(--ink); background:var(--raised); outline:none; }}
     .dashboard-link {{ margin-left:auto; min-height:34px; padding:7px 10px; border:1px solid #566059; border-radius:4px; color:var(--ink); background:var(--raised); font-size:12px; font-weight:700; text-decoration:none; }}
     .dashboard-link:hover,.dashboard-link:focus {{ border-color:var(--green); outline:none; }}
     .upload-trigger {{ min-height:34px; padding:6px 10px; border:1px solid #566059; border-radius:4px; color:var(--ink); background:var(--raised); font-weight:700; cursor:pointer; }}
@@ -510,6 +547,11 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
     .table-scroll {{ overflow-x:auto; }}
     table {{ width:100%; border-collapse:collapse; }} th,td {{ padding:9px 14px; border-top:1px solid var(--line); text-align:left; font-size:12px; }} th {{ color:var(--muted); font-size:10px; text-transform:uppercase; }}
     .moment {{ margin:0 0 42px; padding:0 0 38px; border-bottom:1px solid var(--line); scroll-margin-top:78px; }}
+    .slide-deck .moment {{ display:none; }} .slide-deck .moment.slide-active {{ display:block; }}
+    .slide-controls {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 18px; padding:10px 0; border-bottom:1px solid var(--line); }}
+    .slide-controls button {{ min-height:36px; padding:7px 11px; border:1px solid #566059; border-radius:4px; color:var(--ink); background:var(--raised); font-weight:700; cursor:pointer; }}
+    .slide-controls button:hover,.slide-controls button:focus {{ border-color:var(--green); outline:none; }} .slide-controls button:disabled {{ opacity:.45; cursor:default; }} .slide-position {{ color:var(--muted); font-size:12px; font-weight:700; }}
+    .moment-link.active {{ background:var(--raised); box-shadow:inset 3px 0 0 var(--green); }}
     .moment-header {{ display:flex; justify-content:space-between; gap:20px; align-items:end; margin-bottom:13px; }}
     .eyebrow {{ margin:0 0 3px; color:var(--blue); font-size:11px; font-weight:700; text-transform:uppercase; }}
     h2 {{ margin:0; font-size:21px; }}
@@ -534,12 +576,18 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
     .insertion-option strong,.insertion-option span,.route-option strong,.route-option span {{ display:block; overflow-wrap:anywhere; }}
     .insertion-option strong,.route-option strong {{ font-size:12px; }}
     .insertion-option span,.route-option span {{ margin-top:2px; color:var(--muted); font-size:10px; }}
-    .practice-actions {{ display:flex; align-items:center; gap:10px; min-height:48px; padding:8px 10px; border:1px solid var(--line); border-top:0; background:var(--white); }}
+    .practice-actions {{ display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-height:48px; padding:8px 10px; border:1px solid var(--line); border-top:0; background:var(--white); }}
     .practice-ce {{ display:flex; flex-direction:column; align-items:flex-start; justify-content:center; min-height:44px; max-width:100%; padding:6px 10px; border:1px solid #477b60; border-radius:4px; color:#07130d; background:var(--green); font-weight:800; cursor:pointer; text-align:left; }}
     .practice-ce span,.practice-ce small {{ display:block; max-width:100%; overflow-wrap:anywhere; }}
     .practice-ce small {{ margin-top:1px; font-size:10px; font-weight:650; line-height:1.2; }}
     .practice-ce:hover,.practice-ce:focus {{ border-color:#a8f1c9; outline:none; }}
     .practice-ce:disabled {{ opacity:.6; cursor:wait; }}
+    .variation-frame {{ display:flex; align-items:center; gap:5px; color:var(--muted); font-size:11px; font-weight:700; }}
+    .info-mark {{ display:inline-grid; place-items:center; width:16px; height:16px; border:1px solid var(--muted); border-radius:50%; font:700 10px/1 ui-monospace,SFMono-Regular,Consolas,monospace; }}
+    .variation-source {{ display:inline-flex; border:1px solid var(--line); border-radius:4px; overflow:hidden; }}
+    .variation-source-option {{ min-height:32px; padding:5px 9px; border:0; border-right:1px solid var(--line); color:var(--muted); background:var(--raised); font-size:11px; font-weight:700; cursor:pointer; }}
+    .variation-source-option:last-child {{ border-right:0; }}
+    .variation-source-option.active {{ color:var(--white); background:var(--green); }}
     .practice-status {{ min-width:0; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }}
     .practice-status[data-state="ready"] {{ color:var(--green); }}
     .practice-status[data-state="error"] {{ color:var(--red); }}
@@ -552,6 +600,7 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
     .comparison h3 {{ margin:0 0 6px; color:var(--muted); font-size:10px; text-transform:uppercase; }}
     .comparison strong,.comparison span {{ display:block; overflow-wrap:anywhere; }}
     .comparison strong {{ font-size:13px; }} .comparison span {{ margin-top:3px; color:var(--muted); font-size:11px; }}
+    .verdict {{ display:flex; gap:9px; align-items:baseline; padding:10px 12px; border:1px solid #3b5e49; border-bottom:0; color:#b9e7cd; background:#14241b; }} .verdict strong {{ font-size:12px; }} .verdict span {{ color:#b9c7bf; font-size:12px; }}
     [hidden] {{ display:none !important; }}
     @media (max-width:900px) {{
       .summary {{ grid-template-columns:repeat(3,1fr); }} .metric {{ border-bottom:1px solid var(--line); }}
@@ -564,6 +613,7 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
       .upload-trigger {{ margin-left:0; }}
       .summary {{ grid-template-columns:repeat(2,1fr); }} .metric {{ min-height:70px; padding:12px; }} .metric strong {{ font-size:20px; }}
       .moment-links {{ grid-template-columns:1fr; }} main {{ padding:18px 10px 60px; }}
+      .phase-tabs a {{ min-height:44px; padding:8px 4px; font-size:11px; }}
       .interactive-shell {{ aspect-ratio:4/3; }}
       .moment-header {{ align-items:start; }} .comparison {{ grid-template-columns:1fr; }} .comparison section {{ border-right:0; border-bottom:1px solid var(--line); }}
     }}
@@ -572,6 +622,7 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
 <body>
   <header class="topbar">
     <div><h1>{esc(display_name)}</h1><p>P{analyzed_port} advantage review · chronological counterfactuals</p></div>
+    <nav class="review-tabs" aria-label="Review sections"><a class="active" href="advantage_review.html">Advantage</a><a href="neutral_review.html">Neutral</a><a href="disadvantage_review.html">Disadvantage</a></nav>
     <a class="dashboard-link" href="/">Dashboard</a>
     <button class="upload-trigger" id="upload-trigger" type="button">Upload replay</button>
     <span class="status {status_class}">{'COMPLETE' if complete else f'{failed} RENDER FAILED' if failed else 'INCOMPLETE'}</span>
@@ -580,6 +631,7 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
     <header><h2>Upload Slippi replay</h2><button class="dialog-close" type="button" aria-label="Close upload dialog">&times;</button></header>
     <div id="slp-upload-mount"></div>
   </dialog>
+  <nav class="phase-tabs" aria-label="Game phase"><a class="active" href="advantage_review.html">Advantage</a><a href="neutral_review.html">Neutral</a><a href="disadvantage_review.html">Disadvantage</a></nav>
   <section class="summary" aria-label="Game review summary">
     <div class="metric"><span>Advantage opportunities</span><strong>{opportunity_count}</strong></div>
     <div class="metric"><span>Injection points</span><strong>{int(audit.get('candidate_count') or 0)}</strong></div>
@@ -596,8 +648,9 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
       </select><select id="order-mode" aria-label="Order review moments"><option value="timeline" selected>Timeline order</option><option value="quality">Quality order</option></select><select id="review-mode" aria-label="Review display mode" data-video-fallback="{str(has_video_fallback).lower()}" hidden><option value="interactive">Interactive comparison</option>{'<option value="video">Rendered video</option>' if has_video_fallback else ''}</select></div>
       <nav class="moment-links">{''.join(nav_items)}</nav>
     </aside>
-    <main>
+    <main class="slide-deck">
       {disposition_html}
+      <div class="slide-controls" aria-label="Review slide navigation"><button type="button" data-slide-nav="previous">Previous</button><span class="slide-position" aria-live="polite"></span><button type="button" data-slide-nav="next">Next</button></div>
       {''.join(sections)}
     </main>
   </div>
@@ -617,10 +670,26 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
     const links = [...document.querySelectorAll('.moment-link')];
     const momentParent = moments[0]?.parentElement;
     const linkParent = links[0]?.parentElement;
+    const slidePosition = document.querySelector('.slide-position');
+    const slideButtons = [...document.querySelectorAll('[data-slide-nav]')];
+    let activeMoment = null;
+    const visibleMoments = () => moments.filter(moment => !moment.hidden);
+    const activateSlide = (moment, {{ scroll = false }} = {{}}) => {{
+      const available = visibleMoments();
+      if (!moment || !available.includes(moment)) moment = available[0] || null;
+      activeMoment = moment;
+      moments.forEach(item => item.classList.toggle('slide-active', item === moment));
+      links.forEach(link => link.classList.toggle('active', moment && link.getAttribute('href') === `#${{moment.id}}`));
+      const position = available.indexOf(moment);
+      if (slidePosition) slidePosition.textContent = moment ? `Moment ${{position + 1}} of ${{available.length}}` : 'No moments in this filter';
+      slideButtons.forEach(button => button.disabled = !moment || (button.dataset.slideNav === 'previous' ? position <= 0 : position >= available.length - 1));
+      if (scroll && moment) window.scrollTo({{ top:0, behavior:'smooth' }});
+    }};
     filter.addEventListener('change', () => {{
       const value = filter.value;
       moments.forEach(el => el.hidden = value !== 'all' && el.dataset.category !== value);
       links.forEach(el => el.hidden = value !== 'all' && el.dataset.category !== value);
+      activateSlide(activeMoment);
     }});
     const applyOrder = () => {{
       const quality = orderMode.value === 'quality';
@@ -632,8 +701,37 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
     }};
     orderMode.addEventListener('change', applyOrder);
     applyOrder();
+    activateSlide(moments[0]);
+    slideButtons.forEach(button => button.addEventListener('click', () => {{
+      const available = visibleMoments();
+      const index = available.indexOf(activeMoment);
+      activateSlide(available[index + (button.dataset.slideNav === 'previous' ? -1 : 1)], {{ scroll:true }});
+    }}));
+    links.forEach(link => link.addEventListener('click', event => {{
+      const moment = document.querySelector(link.getAttribute('href'));
+      if (!moment || moment.hidden) return;
+      event.preventDefault();
+      activateSlide(moment, {{ scroll:true }});
+    }}));
+    document.addEventListener('keydown', event => {{
+      if (event.target.matches('input,select,textarea,button')) return;
+      if (event.key === 'ArrowLeft') slideButtons.find(button => button.dataset.slideNav === 'previous')?.click();
+      if (event.key === 'ArrowRight') slideButtons.find(button => button.dataset.slideNav === 'next')?.click();
+    }});
     const interactiveFrames = [...document.querySelectorAll('.interactive-shell iframe[data-src]')];
     if (/^https?:$/.test(location.protocol) && interactiveFrames.length) {{
+      const forwardVisualizerShortcut = event => {{
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        const key = event.key.toLowerCase();
+        if (!([" ", ",", ".", "e"].includes(key) || /^[0-9]$/.test(key))) return;
+        event.preventDefault();
+        if (event.repeat && key === " ") return;
+        const frame = activeMoment?.querySelector('.interactive-shell iframe[data-src]');
+        if (!frame) return;
+        if (!frame.src && frame.dataset.src) frame.src = frame.dataset.src;
+        frame.contentWindow?.postMessage({{ type:'comparison-shortcut', key }}, '*');
+      }};
+      document.addEventListener('keydown', forwardVisualizerShortcut, {{ capture:true }});
       reviewMode.hidden = reviewMode.dataset.videoFallback !== 'true';
       const loadedFrames = new Set();
       const visibleFrames = new Set();
@@ -652,6 +750,8 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
         if (!frame || frame.dataset.loading === 'true') return;
         const relativeFrame = Number(event.data.frame) || 0;
         savedFrames.set(frame, relativeFrame);
+        const shell = shellFor(frame);
+        if (shell) shell.dataset.currentRelativeFrame = String(relativeFrame);
         setPosterFrame(frame, relativeFrame);
       }});
       const captureFrameState = frame => {{
@@ -663,6 +763,8 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
           // The bundled viewer is same-origin, but retain the last known frame if it is not readable.
         }}
         savedFrames.set(frame, relativeFrame);
+        const shell = shellFor(frame);
+        if (shell) shell.dataset.currentRelativeFrame = String(relativeFrame);
         setPosterFrame(frame, relativeFrame);
         return relativeFrame;
       }};
@@ -720,6 +822,7 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
         moment.dataset.currentTargetIndex = button.dataset.targetIndex;
         moment.dataset.currentAlternativeIndex = button.dataset.alternativeIndex || '0';
         shell.dataset.startFrame = button.dataset.startFrame || '0';
+        shell.dataset.currentRelativeFrame = '0';
         savedFrames.set(frame, 0);
         setPosterFrame(frame, 0);
         moment.querySelectorAll('.route-option').forEach(option => {{
@@ -749,6 +852,7 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
         moment.dataset.currentOpening = insertionButton.dataset.opening;
         moment.dataset.currentTargetIndex = insertionButton.dataset.targetIndex;
         moment.dataset.currentAlternativeIndex = '0';
+        moment.dataset.variationFrame = insertionButton.dataset.variationFrame;
         moment.querySelector('.eyebrow').textContent = insertionButton.dataset.eyebrow;
         moment.querySelector('.moment-header h2').textContent = insertionButton.dataset.heading;
         moment.querySelector('.rank').textContent = insertionButton.dataset.rank;
@@ -807,6 +911,32 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
       activateInteractive();
     }}
     const reviewIdMatch = location.pathname.match(new RegExp('^/review-artifacts/([0-9a-f-]+)/'));
+    document.addEventListener('click', event => {{
+      const source = event.target.closest('.variation-source-option');
+      if (!source) return;
+      const group = source.closest('.variation-source');
+      group.querySelectorAll('.variation-source-option').forEach(option => {{
+        const active = option === source;
+        option.classList.toggle('active', active);
+        option.setAttribute('aria-pressed', String(active));
+      }});
+    }});
+    const currentPracticeFrame = moment => {{
+      const shell = moment.querySelector('.interactive-shell');
+      if (reviewMode?.value === 'interactive' && shell) {{
+        let relativeFrame = Number(shell.dataset.currentRelativeFrame || 0);
+        try {{
+          const seek = shell.querySelector('iframe')?.contentDocument?.querySelector('#seek');
+          if (seek) relativeFrame = Number(seek.value) || 0;
+        }} catch (_error) {{
+          // The last frame reported by the viewer remains authoritative while it reloads.
+        }}
+        return Number(shell.dataset.startFrame || 0) + Math.round(relativeFrame);
+      }}
+      const video = moment.querySelector('.video-shell video');
+      if (video) return Number(video.dataset.startFrame || 0) + Math.round(video.currentTime * 60);
+      return Number(moment.dataset.variationFrame || moment.dataset.frame);
+    }};
     document.addEventListener('click', async event => {{
       const button = event.target.closest('.practice-ce');
       if (!button) return;
@@ -821,6 +951,11 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
       status.dataset.state = 'working';
       status.textContent = 'Preparing scenario...';
       try {{
+        const variationStartFrame = currentPracticeFrame(moment);
+        const variationSource = moment.querySelector('.variation-source-option.active')?.dataset.variationSource || 'replay';
+        if (button.dataset.scenarioMode === 'variations' && !Number.isInteger(variationStartFrame)) {{
+          throw new Error('The current playback frame could not be read.');
+        }}
         const response = await fetch(`/api/reviews/${{reviewIdMatch[1]}}/training-mode`, {{
           method:'POST',
           headers:{{'Content-Type':'application/json'}},
@@ -828,6 +963,8 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
             targetIndex:Number(moment.dataset.currentTargetIndex),
             alternativeIndex:Number(moment.dataset.currentAlternativeIndex || 0),
             scenarioMode:button.dataset.scenarioMode,
+            variationStartFrame:button.dataset.scenarioMode === 'variations' ? variationStartFrame : undefined,
+            variationSource:button.dataset.scenarioMode === 'variations' ? variationSource : undefined,
           }}),
         }});
         const body = await response.json();
@@ -835,7 +972,9 @@ def build_page(payload: dict[str, Any], *, out: Path) -> str:
         status.dataset.state = 'ready';
         status.textContent = body.scenario.scenarioMode === 'replay'
           ? `Replay ready in CE from safe f${{body.scenario.practiceStartFrame}}; opening f${{body.scenario.openingHitFrame}}.`
-          : `Phillip rollout ready in CE from safe f${{body.scenario.practiceStartFrame}}; opening f${{body.scenario.openingHitFrame}}; takeover f${{body.scenario.takeoverFrame}} (P${{body.scenario.humanPort}}).`;
+          : body.scenario.scenarioMode === 'variations'
+            ? `Random defense starts at f${{body.scenario.variationStartFrame}}; setup starts at f${{body.scenario.practiceStartFrame}}.`
+            : `Phillip rollout ready in CE from safe f${{body.scenario.practiceStartFrame}}; opening f${{body.scenario.openingHitFrame}}; takeover f${{body.scenario.takeoverFrame}} (P${{body.scenario.humanPort}}).`;
       }} catch (error) {{
         status.dataset.state = 'error';
         status.textContent = error.message || 'Scenario export failed.';
@@ -860,6 +999,12 @@ def main() -> int:
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(build_page(payload, out=out), encoding="utf-8")
+    queue = json.loads(Path(payload["queue_json"]).read_text(encoding="utf-8"))
+    write_placeholder(
+        out.parent / "disadvantage_review.html",
+        display_name=str(queue.get("display_name") or Path(queue.get("replay") or "game.slp").stem),
+        controlled_port=int(queue.get("controlled_port") or 1),
+    )
     print(json.dumps({"out": str(out), "bytes": out.stat().st_size}, indent=2))
     return 0
 

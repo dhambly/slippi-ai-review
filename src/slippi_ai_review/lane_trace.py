@@ -55,7 +55,7 @@ def load_json(path: Path) -> Any:
 
 
 def host_path(raw_path: str) -> Path:
-    if raw_path.startswith("/mnt/") and len(raw_path) >= 7 and raw_path[6] == "/":
+    if os.name == "nt" and raw_path.startswith("/mnt/") and len(raw_path) >= 7 and raw_path[6] == "/":
         drive = raw_path[5].upper()
         rest = raw_path[7:].replace("/", "\\")
         return Path(f"{drive}:\\{rest}")

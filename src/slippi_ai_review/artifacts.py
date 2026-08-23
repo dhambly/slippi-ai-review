@@ -19,10 +19,18 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def export_route(queue: Path, target_index: int, alternative_index: int, out: Path) -> dict[str, Any]:
+def export_route(
+    queue: Path,
+    target_index: int,
+    alternative_index: int,
+    out: Path,
+    msl_root: Path | None = None,
+) -> dict[str, Any]:
     command = module_command("render_target", "--queue-json", queue, "--target-index", target_index, "--out-dir", out)
     if alternative_index:
         command.extend(["--alternative-index", str(alternative_index)])
+    if msl_root is not None:
+        command.extend(["--msl-root", str(msl_root)])
     started = time.perf_counter()
     result = subprocess.run(command, cwd=PROJECT_DIR, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     log = out / "export.log"
@@ -44,10 +52,17 @@ def consolidate(manifest_path: Path, traces: Path, stem: str) -> dict[str, Any]:
     timeline_out.write_text(json.dumps(timeline_payload(replay, agent, switch_frame=switch), indent=2) + "\n", encoding="utf-8")
     lane = (manifest.get("target") or {}).get("representative_lane") or {}
     clip_start = int(manifest.get("clip_start_frame") or 0)
+    model_control = int(
+        manifest.get("model_control_frame")
+        or lane.get("modelControlFrame")
+        or manifest.get("branch_start_frame")
+        or clip_start
+    )
     defender = int(lane.get("defenderTakeoverFrame") or manifest.get("branch_start_frame") or clip_start)
     return {
         "replay_trace": f"../traces/{replay_out.name}", "agent_trace": f"../traces/{agent_out.name}",
         "timeline_events": f"../traces/{timeline_out.name}", "switch_frame": switch,
+        "model_control_frame": max(0, model_control - clip_start),
         "defender_switch_frame": max(0, defender - clip_start), "start_frame": clip_start,
         "frame_count": len((replay.get("frames") or {}).get("rows") or []), "alternative_routes": [],
     }
@@ -58,6 +73,8 @@ def main() -> int:
     parser.add_argument("--queue-json", type=Path, required=True)
     parser.add_argument("--out-root", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--trace-prefix", default="")
+    parser.add_argument("--msl-root", type=Path)
     args = parser.parse_args()
     queue_path, out_root = args.queue_json.resolve(), args.out_root.resolve()
     queue = load_json(queue_path)
@@ -70,9 +87,16 @@ def main() -> int:
         futures = {}
         for index, target in enumerate(targets, 1):
             root = out_root / "routes" / f"{index:03d}"
-            futures[pool.submit(export_route, queue_path, index, 0, root / "primary")] = (index, 0, target)
+            futures[pool.submit(export_route, queue_path, index, 0, root / "primary", args.msl_root)] = (index, 0, target)
             for alternative in range(1, len(target.get("alternative_routes") or []) + 1):
-                futures[pool.submit(export_route, queue_path, index, alternative, root / f"alternative_{alternative:02d}")] = (index, alternative, target)
+                futures[pool.submit(
+                    export_route,
+                    queue_path,
+                    index,
+                    alternative,
+                    root / f"alternative_{alternative:02d}",
+                    args.msl_root,
+                )] = (index, alternative, target)
         for future in as_completed(futures):
             index, alternative, target = futures[future]
             jobs.append({"target_index": index, "alternative_index": alternative, "base_frame": int(target.get("base_frame") or target.get("takeover_frame") or 0), **future.result()})
@@ -87,9 +111,17 @@ def main() -> int:
     results = []
     for index, target in enumerate(targets, 1):
         primary_job = next(job for job in jobs if job["target_index"] == index and job["alternative_index"] == 0)
-        primary = consolidate(Path(primary_job["manifest"]), traces, f"{index:03d}_f{primary_job['base_frame']}")
+        primary = consolidate(
+            Path(primary_job["manifest"]),
+            traces,
+            f"{args.trace_prefix}{index:03d}_f{primary_job['base_frame']}",
+        )
         for job in sorted((j for j in jobs if j["target_index"] == index and j["alternative_index"]), key=lambda j: j["alternative_index"]):
-            route = consolidate(Path(job["manifest"]), traces, f"{index:03d}_f{job['base_frame']}_route_{job['alternative_index']:02d}")
+            route = consolidate(
+                Path(job["manifest"]),
+                traces,
+                f"{args.trace_prefix}{index:03d}_f{job['base_frame']}_route_{job['alternative_index']:02d}",
+            )
             route.update({"route_index": job["alternative_index"], "option": (target.get("alternative_routes") or [])[job["alternative_index"] - 1].get("option") or {}})
             primary["alternative_routes"].append(route)
         results.append({"target_index": index, "base_frame": primary_job["base_frame"], "status": "ok", "interactive": primary, "wall_seconds": primary_job["seconds"], "resolution": ((target.get("representative_lane") or {}).get("resolution") or {})})
@@ -98,6 +130,7 @@ def main() -> int:
         "artifact_mode": "interactive-traces", "video_fallback": False, "workers": args.workers,
         "target_count": len(targets), "successful_count": len(targets), "failed_count": 0,
         "wall_seconds": round(time.perf_counter() - started, 3), "clips_dir": str(artifacts / "clips"),
+        "trace_prefix": args.trace_prefix,
         "selection_audit": queue.get("selection_audit"), "results": results,
     }
     manifest = artifacts / "advantage_improvements.json"

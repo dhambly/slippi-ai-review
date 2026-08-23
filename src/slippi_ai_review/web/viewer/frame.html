@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <script src="/msl-static/tools/viewer/slippi-viewer/dist/index.js?v=damage-fly-boundary-2"></script>
+  <script src="/msl-static/tools/viewer/slippi-viewer/dist/index.js?v=hud-layout-20260718-4"></script>
   <style>
     html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#111512; }
     slippi-viewer { display:block; width:100%; height:100%; }
@@ -19,6 +19,7 @@
     const replayUrl = params.get("replay");
     const agentUrl = params.get("agent");
     const switchFrame = Number(params.get("switch") || 0);
+    const playerNames = [params.get("p1") || "", params.get("p2") || ""];
     const viewer = document.querySelector("slippi-viewer");
     const data = {};
     let active = null;
@@ -38,6 +39,9 @@
         // slippi-viewer's timer adds the 123 pre-game frames internally.
         replayData.settings.timerStart = 480 - ((gameFrameOffset + 123) / 60);
       }
+      replayData.settings.playerSettings?.forEach((player, index) => {
+        if (playerNames[index]) player.displayName = playerNames[index];
+      });
       return replayData;
     }
 
@@ -70,12 +74,22 @@
         .bg-slate-50 { background:#111512 !important; }
         .stroke-slippi-50 { stroke:#29332d !important; }
         text.fill-slate-800 { fill:#e8ece9 !important; }
+        /* PlayerHUD text is the only HUD text with a black stroke; leave the timer alone. */
+        svg > text[stroke="black"] { font-size:29px !important; stroke-width:2px; paint-order:stroke fill; }
         .border { border-color:#39413c !important; }
       `;
       viewer.shadowRoot?.append(theme);
+      // The embedded viewer occasionally renders its trace role as centered
+      // text over the in-game timer. Comparison identity belongs in the shell.
+      const hideTraceRoleLabels = () => viewer.shadowRoot?.querySelectorAll("text").forEach((node) => {
+        if (["Replay", "Phillip"].includes(node.textContent?.trim())) node.style.display = "none";
+      });
+      const observer = viewer.shadowRoot ? new MutationObserver(hideTraceRoleLabels) : null;
+      observer?.observe(viewer.shadowRoot, { childList: true, subtree: true, characterData: true });
       [data.replay, data.agent] = await Promise.all([load(replayUrl), load(agentUrl)]);
       if (!data.replay || (role === "right" && !data.agent)) throw new Error("missing trace URL");
       setFrame(0);
+      hideTraceRoleLabels();
       parent.postMessage({ type: "msl-viewer-ready", role }, "*");
     } catch (error) {
       document.body.textContent = `Viewer failed: ${error.message}`;
@@ -95,9 +109,15 @@
       parent.postMessage({ type: "msl-viewer-interacted", role }, "*");
     }, { capture:true });
     addEventListener("keydown", (event) => {
-      if (event.key !== " " || event.repeat) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.repeat && event.key === " ") {
+        event.preventDefault();
+        return;
+      }
+      const key = event.key.toLowerCase();
+      if (!([" ", ",", ".", "e"].includes(key) || /^[0-9]$/.test(key))) return;
       event.preventDefault();
-      parent.postMessage({ type: "msl-viewer-toggle-playback", role }, "*");
+      parent.postMessage({ type: "msl-viewer-shortcut", role, key }, "*");
     }, { capture:true });
   </script>
 </body>

@@ -203,7 +203,8 @@ def main() -> int:
         baseline = baselines[base_frame]
         lane = representative_lane(option_rows, baseline, metrics)
         public_metrics = {key: value for key, value in metrics.items() if key != "_rank"}
-        takeover_frame = int(lane["takeoverFrame"])
+        inference_start_frame = int(lane["takeoverFrame"])
+        takeover_frame = int(lane.get("modelControlFrame") or inference_start_frame)
         alternatives = []
         seen_signatures = {str(public_metrics["optionSignature"])}
         for alternative_metrics, alternative_rows in sorted(
@@ -214,14 +215,19 @@ def main() -> int:
                 continue
             seen_signatures.add(signature)
             alternative_lane = representative_lane(alternative_rows, baseline, alternative_metrics)
+            alternative_inference_start = int(alternative_lane["takeoverFrame"])
+            alternative_takeover = int(
+                alternative_lane.get("modelControlFrame") or alternative_inference_start
+            )
             alternative_public = {
                 key: value for key, value in alternative_metrics.items() if key != "_rank"
             }
             alternatives.append({
                 "route_rank": len(alternatives) + 2,
                 "offset": int(alternative_lane["offset"]),
-                "branch_start_frame": int(alternative_lane["takeoverFrame"]),
-                "takeover_frame": int(alternative_lane["takeoverFrame"]),
+                "inference_start_frame": alternative_inference_start,
+                "branch_start_frame": alternative_inference_start,
+                "takeover_frame": alternative_takeover,
                 "option": alternative_public,
                 "representative_lane": alternative_lane,
             })
@@ -231,7 +237,8 @@ def main() -> int:
             "queue_index": queue_index,
             "base_frame": base_frame,
             "offset": int(lane["offset"]),
-            "branch_start_frame": takeover_frame,
+            "inference_start_frame": inference_start_frame,
+            "branch_start_frame": inference_start_frame,
             "takeover_frame": takeover_frame,
             "takeover_time": round(takeover_frame / 60.0, 3),
             "label": (

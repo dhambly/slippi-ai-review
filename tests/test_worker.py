@@ -70,6 +70,15 @@ class AdvantageReviewWorkerTests(unittest.TestCase):
         command = worker.pipeline_command(args, review)
         self.assertEqual(command[command.index("--preflight-samples") + 1], "16")
         self.assertEqual(command[command.index("--refinement-samples") + 1], "32")
+        self.assertEqual(command[command.index("--neutral-preflight-samples") + 1], "24")
+        self.assertEqual(command[command.index("--neutral-refinement-samples") + 1], "64")
+        self.assertEqual(command[command.index("--disadvantage-samples") + 1], "8")
+
+    def test_pipeline_command_can_pin_decomp_per_review(self) -> None:
+        review = self.create_review()
+        review["settings"] = {"qualityPreset": "quick", "simulationBackend": "decomp"}
+        command = worker.pipeline_command(self.args(), review)
+        self.assertEqual(command[command.index("--simulation-backend") + 1], "decomp")
 
     def test_process_job_publishes_complete_report(self) -> None:
         review = self.create_review()
@@ -78,6 +87,8 @@ class AdvantageReviewWorkerTests(unittest.TestCase):
             "import json; from pathlib import Path; "
             f"p=Path({str(job_dir)!r})/'artifacts'; p.mkdir(); "
             "(p/'advantage_review.html').write_text('report'); "
+            "(p/'neutral_review.html').write_text('neutral'); "
+            "(p/'disadvantage_review.html').write_text('disadvantage'); "
             "print(json.dumps({'event':'progress','stage':'artifacts','message':'Built artifacts.'}))"
         )
         with patch.object(worker, "pipeline_command", return_value=[sys.executable, "-c", script]):

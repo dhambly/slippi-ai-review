@@ -9,9 +9,8 @@
     html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#101417; font:13px/1.3 Segoe UI,Arial,sans-serif; letter-spacing:0; }
     .app { display:grid; grid-template-rows:minmax(0,1fr) 96px; width:100%; height:100%; }
     .views { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:2px; min-height:0; }
-    .pane { position:relative; min-width:0; min-height:0; overflow:hidden; background:#f8fafc; }
+    .pane { min-width:0; min-height:0; overflow:hidden; background:#f8fafc; }
     .pane iframe { display:block; width:100%; height:100%; border:0; }
-    .label { position:absolute; z-index:2; top:8px; left:8px; padding:4px 7px; color:#fff; background:rgba(23,32,38,.82); border-radius:3px; font:700 12px/1.2 ui-monospace,Consolas,monospace; }
     .controls { display:grid; grid-template-columns:auto auto auto minmax(180px,1fr) auto auto auto auto; gap:7px; align-items:center; padding:6px 10px; color:var(--ink); background:#171a18; border-top:1px solid var(--line); }
     button,select { height:32px; border:1px solid #58615b; border-radius:4px; color:var(--ink); background:#242925; }
     button { min-width:36px; padding:0 9px; cursor:pointer; font-weight:700; }
@@ -19,7 +18,7 @@
     input[type=range] { width:100%; margin:0; accent-color:var(--green); }
     .timeline { position:relative; display:grid; grid-template-rows:25px 25px 22px; gap:1px; min-width:0; align-self:stretch; }
     .timeline-lane { display:grid; grid-template-columns:43px minmax(0,1fr); gap:6px; align-items:center; min-width:0; }
-    .seek-row { display:grid; grid-template-columns:43px 24px minmax(0,1fr) 24px; gap:5px; align-items:center; min-width:0; }
+    .seek-row { display:grid; grid-template-columns:43px minmax(0,1fr) 24px 24px; gap:6px; align-items:center; min-width:0; }
     .move-step { width:24px; min-width:24px; height:20px; padding:0; font-size:12px; line-height:18px; }
     .move-step:disabled { cursor:default; opacity:.35; border-color:#3b433e; }
     .lane-name { overflow:hidden; color:var(--muted); font:700 9px/1 ui-monospace,Consolas,monospace; text-align:right; text-transform:uppercase; }
@@ -27,7 +26,14 @@
     .lane-track::after { content:""; position:absolute; z-index:1; top:50%; right:0; left:0; border-top:1px solid #3b433e; pointer-events:none; }
     .lane-track.agent { background:linear-gradient(to right,#191c1a 0 var(--switch-pct),#202421 var(--switch-pct) 100%); }
     .pre-takeover { position:absolute; inset:0 auto 0 0; width:var(--switch-pct); display:grid; place-items:center; overflow:hidden; color:#667069; font:700 8px/1 ui-monospace,Consolas,monospace; }
-    .takeover-line { position:absolute; z-index:3; top:0; bottom:0; left:var(--switch-pct); width:2px; background:#aeb8b2; pointer-events:none; }
+    .takeover-line { position:absolute; z-index:4; top:0; bottom:0; left:var(--switch-pct); width:12px; translate:-50% 0; padding:0; border:0; background:transparent; cursor:pointer; }
+    .takeover-line::after { content:""; position:absolute; top:0; bottom:0; left:5px; width:2px; background:#aeb8b2; }
+    .takeover-line:hover::after,.takeover-line:focus-visible::after { width:3px; left:4px; background:#fff; }
+    .takeover-line:focus-visible { outline:2px solid var(--green); outline-offset:2px; }
+    .secondary-takeover-line { position:absolute; z-index:4; top:0; bottom:0; left:var(--defender-switch-pct); width:12px; translate:-50% 0; padding:0; border:0; background:transparent; cursor:pointer; }
+    .secondary-takeover-line::after { content:""; position:absolute; top:0; bottom:0; left:5px; width:2px; background:var(--p2); }
+    .secondary-takeover-line:hover::after,.secondary-takeover-line:focus-visible::after { width:3px; left:4px; background:#8fe2f4; }
+    .secondary-takeover-line:focus-visible { outline:2px solid var(--p2); outline-offset:2px; }
     .move-event { position:absolute; z-index:2; width:8px; height:8px; translate:-50% 0; padding:0; border:1px solid rgba(255,255,255,.7); border-radius:50%; cursor:pointer; opacity:.94; }
     .move-event[data-player="0"] { top:1px; background:var(--p1); }
     .move-event[data-player="1"] { bottom:1px; background:var(--p2); }
@@ -35,9 +41,6 @@
     .move-event:hover,.move-event:focus { z-index:4; outline:2px solid #fff; opacity:1; }
     .timeline-tooltip { position:fixed; z-index:20; display:none; max-width:min(310px,calc(100vw - 16px)); padding:6px 8px; border-radius:4px; color:#fff; background:rgba(18,25,29,.96); box-shadow:0 2px 8px rgba(0,0,0,.28); font:11px/1.35 Segoe UI,Arial,sans-serif; pointer-events:none; }
     .timeline-tooltip.visible { display:block; }
-    .timeline-key { display:flex; align-items:center; justify-content:flex-end; gap:5px; overflow:hidden; color:var(--muted); font:8px/1 ui-monospace,Consolas,monospace; }
-    .key-dot { width:6px; height:6px; border-radius:1px; background:var(--p1); }
-    .key-dot.p2 { background:var(--p2); }
     .frame { min-width:105px; text-align:right; font:700 12px/1 ui-monospace,Consolas,monospace; }
     .error { position:absolute; z-index:4; inset:0; display:grid; place-items:center; padding:20px; color:#fff; background:#712b2b; text-align:center; }
     @media(max-width:620px) {
@@ -53,7 +56,7 @@
       .frame { min-width:0; font-size:10px; }
       select { display:none; }
       .timeline-lane { grid-template-columns:37px minmax(0,1fr); gap:4px; }
-      .seek-row { grid-template-columns:37px 22px minmax(0,1fr) 22px; gap:3px; }
+      .seek-row { grid-template-columns:37px minmax(0,1fr) 22px 22px; gap:4px; }
       .move-step { width:22px; min-width:22px; }
       .lane-name { font-size:8px; }
       .move-event { width:7px; height:7px; }
@@ -63,8 +66,8 @@
 <body>
   <div class="app">
     <div class="views">
-      <section class="pane"><span class="label">Replay</span><iframe id="left" title="Replay visualization"></iframe></section>
-      <section class="pane"><span id="right-label" class="label">Replay</span><iframe id="right" title="Counterfactual visualization"></iframe></section>
+      <section class="pane"><iframe id="left" title="Replay visualization"></iframe></section>
+      <section class="pane"><iframe id="right" title="Counterfactual visualization"></iframe></section>
     </div>
     <div class="controls">
       <button id="reset" type="button" title="Reset" aria-label="Reset">|&lt;</button>
@@ -72,11 +75,11 @@
       <button id="play" type="button" title="Play or pause">Play</button>
       <div id="timeline" class="timeline" aria-label="Move-event timeline">
         <div class="timeline-lane"><span class="lane-name">Replay</span><div id="replay-events" class="lane-track" aria-label="Replay move events"></div></div>
-        <div class="timeline-lane"><span class="lane-name">MSL</span><div id="agent-events" class="lane-track agent" aria-label="MSL move events"><span class="pre-takeover">REPLAY</span><span class="takeover-line"></span></div></div>
+        <div class="timeline-lane"><span class="lane-name">MSL</span><div id="agent-events" class="lane-track agent" aria-label="MSL move events"><span class="pre-takeover">REPLAY</span><button id="takeover-line" class="takeover-line" type="button"></button><button id="secondary-takeover-line" class="secondary-takeover-line" type="button"></button></div></div>
         <div class="seek-row">
-          <span class="timeline-key"><i class="key-dot"></i>P1 <i class="key-dot p2"></i>P2</span>
-          <button id="previous-move" class="move-step" type="button" title="Previous move" aria-label="Previous move" disabled>&#9664;</button>
+          <span aria-hidden="true"></span>
           <input id="seek" type="range" min="0" value="0" step="1" aria-label="Frame">
+          <button id="previous-move" class="move-step" type="button" title="Previous move" aria-label="Previous move" disabled>&#9664;</button>
           <button id="next-move" class="move-step" type="button" title="Next move" aria-label="Next move" disabled>&#9654;</button>
         </div>
         <div id="timeline-tooltip" class="timeline-tooltip" role="tooltip"></div>
@@ -93,12 +96,13 @@
     const agent = params.get("agent");
     const eventMetadataUrl = params.get("events");
     const switchFrame = Number(params.get("switch") || 0);
+    const takeoverFrame = Number(params.get("takeover") || switchFrame);
     const defenderSwitch = Number(params.get("defenderSwitch") || switchFrame);
     const startFrame = Number(params.get("start") || 0);
     const frameCount = Math.max(1, Number(params.get("frames") || 1));
     const left = document.querySelector("#left");
     const right = document.querySelector("#right");
-    const rightLabel = document.querySelector("#right-label");
+    const playerNames = { p1: params.get("p1") || "", p2: params.get("p2") || "" };
     const seek = document.querySelector("#seek");
     const frameLabel = document.querySelector("#frame");
     const playButton = document.querySelector("#play");
@@ -106,6 +110,8 @@
     const timeline = document.querySelector("#timeline");
     const replayEvents = document.querySelector("#replay-events");
     const agentEvents = document.querySelector("#agent-events");
+    const takeoverLine = document.querySelector("#takeover-line");
+    const secondaryTakeoverLine = document.querySelector("#secondary-takeover-line");
     const timelineTooltip = document.querySelector("#timeline-tooltip");
     const previousMoveButton = document.querySelector("#previous-move");
     const nextMoveButton = document.querySelector("#next-move");
@@ -129,19 +135,24 @@
     const foxSpecials = new Map([[369,"Laser"],[370,"Laser"],[371,"Laser"],[372,"Laser"],[373,"Laser"],[374,"Laser"],[375,"Laser"],[376,"Laser"],[377,"Laser"],[378,"Laser"],[379,"Side-B"],[380,"Side-B"],[381,"Up-B"],[382,"Up-B"],[383,"Shine"],[384,"Shine"],[385,"Shine"]]);
     const sheikSpecials = new Map([[341,"Needles"],[342,"Needles"],[343,"Needles"],[344,"Needles"],[345,"Needles"],[346,"Needles"],[347,"Needles"],[348,"Needles"],[349,"Side-B"],[350,"Side-B"],[351,"Side-B"],[352,"Side-B"],[353,"Side-B"],[354,"Side-B"],[355,"Up-B"],[356,"Up-B"],[357,"Up-B"],[358,"Up-B"],[359,"Up-B"],[360,"Up-B"],[361,"Down-B"],[362,"Down-B"],[363,"Down-B"],[364,"Down-B"]]);
 
-    const childBase = new URL("frame.html", location.href);
+    const childBase = new URL("frame.html?v=hud-36", location.href);
     const leftUrl = new URL(childBase);
     leftUrl.searchParams.set("role", "left");
     leftUrl.searchParams.set("replay", replay);
+    leftUrl.searchParams.set("p1", playerNames.p1);
+    leftUrl.searchParams.set("p2", playerNames.p2);
     const rightUrl = new URL(childBase);
     rightUrl.searchParams.set("role", "right");
     rightUrl.searchParams.set("replay", replay);
     rightUrl.searchParams.set("agent", agent);
     rightUrl.searchParams.set("switch", switchFrame);
+    rightUrl.searchParams.set("p1", playerNames.p1);
+    rightUrl.searchParams.set("p2", playerNames.p2);
     left.src = leftUrl;
     right.src = rightUrl;
     seek.max = String(frameCount - 1);
-    timeline.style.setProperty("--switch-pct", `${Math.max(0, Math.min(100, switchFrame / Math.max(1, frameCount - 1) * 100))}%`);
+    timeline.style.setProperty("--switch-pct", `${Math.max(0, Math.min(100, takeoverFrame / Math.max(1, frameCount - 1) * 100))}%`);
+    timeline.style.setProperty("--defender-switch-pct", `${Math.max(0, Math.min(100, defenderSwitch / Math.max(1, frameCount - 1) * 100))}%`);
 
     function actionName(actionId, charId) {
       if (charId === 1 && foxSpecials.has(actionId)) return foxSpecials.get(actionId);
@@ -231,6 +242,50 @@
       timelineTooltip.style.top = `${y}px`;
     }
 
+    function setupTakeoverMarker() {
+      const absolute = startFrame + takeoverFrame;
+      const tooltip = `MSL | Phillip takeover | f${absolute}`;
+      takeoverLine.dataset.frame = String(takeoverFrame);
+      takeoverLine.dataset.tooltip = tooltip;
+      takeoverLine.title = tooltip;
+      takeoverLine.setAttribute("aria-label", tooltip);
+      takeoverLine.addEventListener("click", () => { setPlaying(false); setFrame(takeoverFrame); });
+      takeoverLine.addEventListener("keydown", event => {
+        if (event.defaultPrevented) return;
+        if (event.key !== " ") return;
+        event.preventDefault();
+        setPlaying(!playing);
+      });
+      takeoverLine.addEventListener("pointerenter", pointer => showTooltip(pointer, takeoverLine));
+      takeoverLine.addEventListener("pointermove", pointer => showTooltip(pointer, takeoverLine));
+      takeoverLine.addEventListener("pointerleave", hideTooltip);
+      takeoverLine.addEventListener("focus", () => {
+        const bounds = takeoverLine.getBoundingClientRect();
+        showTooltip({ clientX:bounds.left + bounds.width / 2, clientY:bounds.top }, takeoverLine);
+      });
+      takeoverLine.addEventListener("blur", hideTooltip);
+
+      if (defenderSwitch <= takeoverFrame || defenderSwitch >= frameCount) {
+        secondaryTakeoverLine.hidden = true;
+        return;
+      }
+      const secondaryAbsolute = startFrame + defenderSwitch;
+      const secondaryTooltip = `MSL | Other player Phillip takeover | f${secondaryAbsolute}`;
+      secondaryTakeoverLine.dataset.frame = String(defenderSwitch);
+      secondaryTakeoverLine.dataset.tooltip = secondaryTooltip;
+      secondaryTakeoverLine.title = secondaryTooltip;
+      secondaryTakeoverLine.setAttribute("aria-label", secondaryTooltip);
+      secondaryTakeoverLine.addEventListener("click", () => { setPlaying(false); setFrame(defenderSwitch); });
+      secondaryTakeoverLine.addEventListener("pointerenter", pointer => showTooltip(pointer, secondaryTakeoverLine));
+      secondaryTakeoverLine.addEventListener("pointermove", pointer => showTooltip(pointer, secondaryTakeoverLine));
+      secondaryTakeoverLine.addEventListener("pointerleave", hideTooltip);
+      secondaryTakeoverLine.addEventListener("focus", () => {
+        const bounds = secondaryTakeoverLine.getBoundingClientRect();
+        showTooltip({ clientX:bounds.left + bounds.width / 2, clientY:bounds.top }, secondaryTakeoverLine);
+      });
+      secondaryTakeoverLine.addEventListener("blur", hideTooltip);
+    }
+
     function renderEvents(container, events, frameOffset, laneName, source, beforeFrame = null) {
       events.forEach(event => {
         const start = Math.max(0, frameOffset + event.start);
@@ -254,7 +309,13 @@
         marker.style.left = `${start / frameCount * 100}%`;
         marker.addEventListener("click", () => { setPlaying(false); setFrame(start); });
         marker.addEventListener("keydown", event => {
-          if (event.key !== "Enter" && event.key !== " ") return;
+          if (event.defaultPrevented) return;
+          if (event.key === " ") {
+            event.preventDefault();
+            setPlaying(!playing);
+            return;
+          }
+          if (event.key !== "Enter") return;
           event.preventDefault();
           setPlaying(false);
           setFrame(start);
@@ -322,11 +383,13 @@
         const rawAgentLane = metadataAgent != null ? metadataAgent : agentTrace ? traceEvents(agentTrace) : [];
         const agentLane = rawAgentLane.filter(event => {
           const start = agentOffset + event.start;
-          if (start !== switchFrame) return true;
+          const end = agentOffset + event.end;
+          if (end <= takeoverFrame) return false;
+          if (start !== takeoverFrame) return true;
           return !replayLane.some(replayEvent => (
             replayEvent.player === event.player
-            && replayEvent.start < switchFrame
-            && replayEvent.end > switchFrame
+            && replayEvent.start < takeoverFrame
+            && replayEvent.end > takeoverFrame
             && (
               replayEvent.actionId != null && event.actionId != null
                 ? replayEvent.actionId === event.actionId
@@ -335,7 +398,7 @@
           ));
         });
         renderEvents(replayEvents, replayLane, 0, "Replay", "replay");
-        renderEvents(agentEvents, replayLane, 0, "Replay before takeover", "replay-prefix", switchFrame);
+        renderEvents(agentEvents, replayLane, 0, "Replay before takeover", "replay-prefix", takeoverFrame);
         renderEvents(agentEvents, agentLane, agentOffset, "MSL", "msl");
         collectMoveFrames();
         document.documentElement.dataset.timelineReady = "true";
@@ -356,7 +419,6 @@
       parent.postMessage({ type: "comparison-frame", frame }, "*");
       const absolute = startFrame + frame;
       frameLabel.textContent = `f${absolute} | ${frame + 1}/${frameCount}`;
-      rightLabel.textContent = frame < switchFrame ? "Replay" : frame < defenderSwitch ? "MSL attacker" : "Both MSL";
       updateMoveButtons();
     }
 
@@ -370,6 +432,31 @@
       playButton.textContent = playing ? "Pause" : "Play";
       lastTick = null;
       accumulator = 0;
+    }
+
+    function runShortcut(rawKey) {
+      const key = String(rawKey || "").toLowerCase();
+      if (key === " ") {
+        setPlaying(!playing);
+        return true;
+      }
+      if (key === ",") {
+        setPlaying(false);
+        setFrame(frame - 1);
+        return true;
+      }
+      if (key === "." || key === "e") {
+        setPlaying(false);
+        setFrame(frame + 1);
+        return true;
+      }
+      if (/^[0-9]$/.test(key)) {
+        const percentage = key === "0" ? 100 : Number(key) * 10;
+        setPlaying(false);
+        setFrame(Math.round((frameCount - 1) * percentage / 100));
+        return true;
+      }
+      return false;
     }
 
     function tick(now) {
@@ -390,6 +477,8 @@
     addEventListener("message", (event) => {
       if (event.data?.type === "msl-viewer-ready") { ready += 1; if (ready === 2) postFrame(); }
       if (event.data?.type === "msl-viewer-interacted") visualizerEngaged = true;
+      if (event.data?.type === "comparison-shortcut") runShortcut(event.data.key);
+      if (event.data?.type === "msl-viewer-shortcut") runShortcut(event.data.key);
       if (event.data?.type === "msl-viewer-toggle-playback") {
         visualizerEngaged = true;
         setPlaying(!playing);
@@ -411,11 +500,13 @@
     seek.addEventListener("input", () => { setPlaying(false); setFrame(Number(seek.value)); });
     document.addEventListener("pointerdown", () => { visualizerEngaged = true; });
     document.addEventListener("keydown", (event) => {
-      if (!visualizerEngaged || event.key !== " " || event.defaultPrevented || event.repeat) return;
-      if (event.target.closest("button,input,select,.move-event")) return;
-      event.preventDefault();
-      setPlaying(!playing);
-    });
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.repeat && event.key === " ") {
+        event.preventDefault();
+        return;
+      }
+      if (runShortcut(event.key)) event.preventDefault();
+    }, { capture:true });
     const fullscreenButton = document.querySelector("#fullscreen");
     async function toggleFullscreen() {
       if (document.fullscreenElement) await document.exitFullscreen?.();
@@ -432,7 +523,7 @@
     }));
     document.addEventListener("fullscreenchange", updateFullscreenButton);
     updateFullscreenButton();
-    buildTimeline(); postFrame(); requestAnimationFrame(tick);
+    setupTakeoverMarker(); buildTimeline(); postFrame(); requestAnimationFrame(tick);
   </script>
 </body>
 </html>

@@ -26,9 +26,14 @@ class SlpValidationTests(unittest.TestCase):
         details = {"players": [player(1, "Fox"), player(2, "Marth")]}
         self.assertEqual(server_module.validate_slp(Path("unused"), lambda _: details), details)
 
+    def test_accepts_newly_calibrated_characters(self) -> None:
+        for opponent in ("Samus", "Peach", "Yoshi"):
+            details = {"players": [player(1, "Captain Falcon"), player(2, opponent)]}
+            self.assertEqual(server_module.validate_slp(Path("unused"), lambda _: details), details)
+
     def test_rejects_unsupported_character(self) -> None:
-        details = {"players": [player(1, "Fox"), player(2, "Peach")]}
-        with self.assertRaisesRegex(server_module.UploadError, "Unsupported: Peach") as raised:
+        details = {"players": [player(1, "Fox"), player(2, "Mario")]}
+        with self.assertRaisesRegex(server_module.UploadError, "Unsupported: Mario") as raised:
             server_module.validate_slp(Path("unused"), lambda _: details)
         self.assertEqual(raised.exception.code, "unsupported_character")
 
@@ -66,11 +71,37 @@ class UploadEndpointTests(unittest.TestCase):
                 "players": [player(1, "Fox"), player(2, "Sheik")],
                 "match": {"stageId": 31, "slpVersion": "3.19.0", "lastFrame": 600},
             }
-        self.training_calls: list[tuple[str, int, int, str]] = []
+        self.training_calls: list[tuple[str, int, int, str, int | None, str | None, str]] = []
 
-        def training_launcher(_uploads: Path, review_id: str, target_index: int, alternative_index: int, scenario_mode: str) -> dict[str, object]:
-            self.training_calls.append((review_id, target_index, alternative_index, scenario_mode))
-            return {"ok": True, "scenarioMode": scenario_mode, "takeoverFrame": 420, "humanPort": 2}
+        def training_launcher(
+            _uploads: Path,
+            review_id: str,
+            target_index: int,
+            alternative_index: int,
+            scenario_mode: str,
+            variation_start_frame: int | None,
+            variation_source: str | None,
+            queue_mode: str,
+        ) -> dict[str, object]:
+            self.training_calls.append(
+                (
+                    review_id,
+                    target_index,
+                    alternative_index,
+                    scenario_mode,
+                    variation_start_frame,
+                    variation_source,
+                    queue_mode,
+                )
+            )
+            return {
+                "ok": True,
+                "scenarioMode": scenario_mode,
+                "takeoverFrame": 420,
+                "humanPort": 2,
+                "variationStartFrame": variation_start_frame,
+                "variationSource": variation_source,
+            }
 
         handler = server_module.make_handler(
             root,
@@ -268,7 +299,67 @@ class UploadEndpointTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(response["scenario"]["takeoverFrame"], 420)
         self.assertEqual(response["scenario"]["scenarioMode"], "replay")
-        self.assertEqual(self.training_calls, [(review_id, 3, 1, "replay")])
+        self.assertEqual(self.training_calls, [(review_id, 3, 1, "replay", None, None, "standard")])
+
+    def test_training_mode_endpoint_passes_random_defense_frame(self) -> None:
+        _, payload = self.request(b"valid replay")
+        review_id = payload["review"]["reviewId"]
+        artifacts = self.uploads / review_id / "artifacts"
+        artifacts.mkdir()
+        (artifacts / "advantage_review.html").write_text("review", encoding="utf-8")
+        server_module.update_review(
+            self.uploads,
+            review_id,
+            "complete",
+            message="Ready",
+            report="advantage_review.html",
+        )
+        status, response = self.post_json(
+            f"/api/reviews/{review_id}/training-mode",
+            {
+                "targetIndex": 3,
+                "alternativeIndex": 1,
+                "scenarioMode": "variations",
+                "variationStartFrame": 1704,
+                "variationSource": "rollout",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(response["scenario"]["variationStartFrame"], 1704)
+        self.assertEqual(response["scenario"]["variationSource"], "rollout")
+        self.assertEqual(
+            self.training_calls,
+            [(review_id, 3, 1, "variations", 1704, "rollout", "standard")],
+        )
+
+    def test_training_mode_endpoint_routes_phase_sweep_scenarios(self) -> None:
+        _, payload = self.request(b"valid replay")
+        review_id = payload["review"]["reviewId"]
+        artifacts = self.uploads / review_id / "artifacts"
+        artifacts.mkdir()
+        (artifacts / "advantage_review.html").write_text("review", encoding="utf-8")
+        server_module.update_review(self.uploads, review_id, "complete", message="Ready", report="advantage_review.html")
+        status, _ = self.post_json(
+            f"/api/reviews/{review_id}/training-mode",
+            {"targetIndex": 2, "alternativeIndex": 0, "scenarioMode": "variations", "variationStartFrame": 240,
+             "variationSource": "replay", "queueMode": "phase-sweep"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(self.training_calls, [(review_id, 2, 0, "variations", 240, "replay", "phase-sweep")])
+
+    def test_training_mode_endpoint_routes_disadvantage_scenarios(self) -> None:
+        _, payload = self.request(b"valid replay")
+        review_id = payload["review"]["reviewId"]
+        artifacts = self.uploads / review_id / "artifacts"
+        artifacts.mkdir()
+        (artifacts / "advantage_review.html").write_text("review", encoding="utf-8")
+        server_module.update_review(self.uploads, review_id, "complete", message="Ready", report="advantage_review.html")
+        status, _ = self.post_json(
+            f"/api/reviews/{review_id}/training-mode",
+            {"targetIndex": 1, "alternativeIndex": 0, "scenarioMode": "phillip", "queueMode": "disadvantage"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(self.training_calls, [(review_id, 1, 0, "phillip", None, None, "disadvantage")])
 
     def test_training_mode_endpoint_rejects_boolean_indices(self) -> None:
         _, payload = self.request(b"valid replay")

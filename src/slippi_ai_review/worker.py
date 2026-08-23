@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .config import load_settings
 from .server import (
     DEFAULT_UPLOAD_DIR,
     _list_reviews,
@@ -141,16 +142,30 @@ def pipeline_command(args: argparse.Namespace, review: dict[str, object]) -> lis
     target = review.get("targetPlayer") if isinstance(review.get("targetPlayer"), dict) else {}
     settings = review.get("settings") if isinstance(review.get("settings"), dict) else {}
     preset = str(settings.get("qualityPreset") or "standard")
+    simulation_backend = str(
+        settings.get("simulationBackend")
+        or getattr(args, "simulation_backend", "legacy")
+        or "legacy"
+    )
     presets = {
-        "quick": (16, 32),
-        "standard": (64, 128),
-        "deep": (128, 256),
+        "quick": (16, 32, 24, 64, 8),
+        "standard": (64, 128, 48, 192, 16),
+        "deep": (128, 256, 96, 384, 32),
     }
-    preflight_samples, refinement_samples = presets.get(preset, presets["standard"])
+    preflight_samples, refinement_samples, neutral_preflight_samples, neutral_refinement_samples, disadvantage_samples = presets.get(
+        preset,
+        presets["standard"],
+    )
     if args.preflight_samples is not None:
         preflight_samples = args.preflight_samples
     if args.refinement_samples is not None:
         refinement_samples = args.refinement_samples
+    if getattr(args, "neutral_preflight_samples", None) is not None:
+        neutral_preflight_samples = args.neutral_preflight_samples
+    if getattr(args, "neutral_refinement_samples", None) is not None:
+        neutral_refinement_samples = args.neutral_refinement_samples
+    if getattr(args, "disadvantage_samples", None) is not None:
+        disadvantage_samples = args.disadvantage_samples
     command = module_command(
         "pipeline",
         "--replay", str(args.upload_dir / review_id / "replay.slp"),
@@ -159,14 +174,23 @@ def pipeline_command(args: argparse.Namespace, review: dict[str, object]) -> lis
         "--display-name", str(Path(str(review.get("originalFilename") or "replay.slp")).stem),
         "--preflight-samples", str(preflight_samples),
         "--refinement-samples", str(refinement_samples),
+        "--neutral-preflight-samples", str(neutral_preflight_samples),
+        "--neutral-refinement-samples", str(neutral_refinement_samples),
+        "--disadvantage-samples", str(disadvantage_samples),
         "--max-batch-lanes", str(args.max_batch_lanes),
         "--render-workers", str(args.render_workers),
+        "--gpu-duty-cycle", str(getattr(args, "gpu_duty_cycle", 0.20)),
+        "--simulation-backend", simulation_backend,
     )
     match = review.get("match") if isinstance(review.get("match"), dict) else {}
     if match.get("slpVersion"):
         command.extend(("--slp-version", str(match["slpVersion"])))
     if args.force:
         command.append("--force")
+    if getattr(args, "neutral_enable_gpu", True):
+        command.append("--neutral-enable-gpu")
+    if getattr(args, "disadvantage_enable_gpu", True):
+        command.append("--disadvantage-enable-gpu")
     return command
 
 
@@ -223,6 +247,9 @@ def process_job(args: argparse.Namespace, review: dict[str, object]) -> bool:
                     patch_job(args.upload_dir, review_id, message=message, progress={
                         "stage": stage,
                         "message": message,
+                        "chunk": event.get("chunk"),
+                        "lanes": event.get("lanes"),
+                        "chunkSeconds": event.get("seconds"),
                         "updatedAt": _utc_now(),
                     })
                     write_worker_state(args.upload_dir, status="processing", review_id=review_id, message=message)
@@ -238,9 +265,14 @@ def process_job(args: argparse.Namespace, review: dict[str, object]) -> bool:
             return False
         if return_code != 0:
             raise RuntimeError(f"Pipeline exited with code {return_code}; see {log_path}")
-        report = job_dir / "artifacts" / "advantage_review.html"
-        if not report.is_file():
-            raise FileNotFoundError(f"Pipeline did not publish {report}")
+        required_reports = [
+            job_dir / "artifacts" / "advantage_review.html",
+            job_dir / "artifacts" / "neutral_review.html",
+            job_dir / "artifacts" / "disadvantage_review.html",
+        ]
+        missing_reports = [report for report in required_reports if not report.is_file()]
+        if missing_reports:
+            raise FileNotFoundError(f"Pipeline did not publish {', '.join(str(path) for path in missing_reports)}")
         update_review(
             args.upload_dir,
             review_id,
@@ -272,12 +304,24 @@ def process_job(args: argparse.Namespace, review: dict[str, object]) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    configured = load_settings()
     parser.add_argument("--upload-dir", type=Path, default=DEFAULT_UPLOAD_DIR)
     parser.add_argument("--poll-seconds", type=float, default=5.0)
     parser.add_argument("--review-id")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--preflight-samples", type=int)
     parser.add_argument("--refinement-samples", type=int)
+    parser.add_argument("--neutral-preflight-samples", type=int)
+    parser.add_argument("--neutral-refinement-samples", type=int)
+    parser.add_argument("--disadvantage-samples", type=int)
+    parser.add_argument("--neutral-enable-gpu", action="store_true")
+    parser.add_argument("--disadvantage-enable-gpu", action="store_true")
+    parser.add_argument("--gpu-duty-cycle", type=float, default=0.20)
+    parser.add_argument(
+        "--simulation-backend",
+        choices=("legacy", "decomp"),
+        default=configured.simulation_backend,
+    )
     parser.add_argument("--max-batch-lanes", type=int, default=4096)
     parser.add_argument("--render-workers", type=int, default=4)
     parser.add_argument("--force", action="store_true")
@@ -286,6 +330,8 @@ def main() -> int:
     args.upload_dir.mkdir(parents=True, exist_ok=True)
     if args.poll_seconds <= 0:
         raise ValueError("--poll-seconds must be positive")
+    if not 0 < args.gpu_duty_cycle <= 1:
+        raise ValueError("--gpu-duty-cycle must be in (0, 1]")
 
     with singleton_lock(args.upload_dir / "worker.lock"):
         recover_interrupted_jobs(args.upload_dir)

@@ -25,7 +25,7 @@ from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 
 from .config import load_settings
-from .paths import JS_DIR, WEB_DIR, module_command
+from .paths import JS_DIR, WEB_DIR, module_command, node_executable
 
 
 WORK_DIR = Path(__file__).resolve().parents[2]
@@ -35,7 +35,20 @@ DEFAULT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 SLP_INSPECTOR = JS_DIR / "inspect_slp_upload.js"
 UPLOAD_ENDPOINT = "/api/slp-upload"
 UPLOAD_PANEL_PATH = "/advantage-review-static/slp_upload_panel.js"
-SUPPORTED_CHARACTERS = frozenset({"Fox", "Falco", "Marth", "Sheik"})
+SUPPORTED_CHARACTER_NAMES = (
+    "Fox",
+    "Falco",
+    "Marth",
+    "Sheik",
+    "Captain Falcon",
+    "Ganondorf",
+    "Jigglypuff",
+    "Pikachu",
+    "Samus",
+    "Peach",
+    "Yoshi",
+)
+SUPPORTED_CHARACTERS = frozenset(SUPPORTED_CHARACTER_NAMES)
 REVIEW_SCHEMA_VERSION = 3
 REVIEW_STATES = frozenset({"awaiting_target", "queued", "processing", "complete", "failed", "cancelled", "archived"})
 QUALITY_PRESETS = {
@@ -43,6 +56,48 @@ QUALITY_PRESETS = {
     "standard": {"label": "Standard", "preflightSamples": 64, "refinementSamples": 128, "relativeCost": 1.0},
     "deep": {"label": "Deep", "preflightSamples": 128, "refinementSamples": 256, "relativeCost": 2.0},
 }
+PIPELINE_STAGE_WEIGHTS = {
+    "candidates": 2,
+    "phase_sweep_inventory": 2,
+    "phase_sweep": 5,
+    "preflight": 22,
+    "preflight_selection": 2,
+    "refinement": 8,
+    "route_selection": 2,
+    "artifacts": 3,
+    "neutral": 40,
+    "disadvantage": 18,
+    "report_navigation": 1,
+    "phase_sweep_selection": 2,
+    "phase_sweep_artifacts": 9,
+    "phase_sweep_report": 1,
+    "publish": 1,
+}
+PIPELINE_STAGE_ORDER = tuple(PIPELINE_STAGE_WEIGHTS)
+PIPELINE_STAGE_COPY = {
+    "candidates": ("Reading the replay", "Finding interactions worth reviewing."),
+    "phase_sweep_inventory": ("Mapping the game", "Building the whole-game phase timeline."),
+    "phase_sweep": ("Scanning the game", "Running quick Phillip probes across every phase."),
+    "preflight": ("Testing advantage moments", "Sampling promising openings before the deeper pass."),
+    "preflight_selection": ("Choosing strong moments", "Filtering the first-pass Phillip results."),
+    "refinement": ("Deepening the best routes", "Running larger samples on the most promising Phillip options."),
+    "route_selection": ("Comparing Phillip options", "Selecting stable alternatives to show in the review."),
+    "artifacts": ("Preparing comparison clips", "Packaging the selected interactive routes."),
+    "neutral": ("Analyzing neutral losses", "Testing earlier choices that could consistently avoid getting opened up."),
+    "disadvantage": ("Analyzing disadvantage", "Testing defensive options and escapes against observed follow-up pressure."),
+    "report_navigation": ("Building the review", "Organizing the refined advantage slides."),
+    "phase_sweep_selection": ("Choosing whole-game slides", "Selecting representative moments across the match."),
+    "phase_sweep_artifacts": ("Preparing whole-game clips", "Packaging interactive examples for every game phase."),
+    "phase_sweep_report": ("Building phase reviews", "Writing the Advantage, Neutral, and Disadvantage slide decks."),
+    "publish": ("Publishing the review", "Making the completed analysis available."),
+}
+PIPELINE_PROGRESS_PHASES = (
+    ("map", "Map the replay", ("candidates", "phase_sweep_inventory", "phase_sweep")),
+    ("advantage", "Analyze advantage", ("preflight", "preflight_selection", "refinement", "route_selection", "artifacts")),
+    ("neutral", "Analyze neutral", ("neutral",)),
+    ("disadvantage", "Analyze disadvantage", ("disadvantage",)),
+    ("review", "Build the review", ("report_navigation", "phase_sweep_selection", "phase_sweep_artifacts", "phase_sweep_report", "publish")),
+)
 TRAINING_MODE_LOCK = threading.Lock()
 
 
@@ -86,7 +141,7 @@ def inspect_slp(path: Path) -> dict[str, object]:
         raise UploadError(500, "parser_unavailable", "The local Slippi parser is not available.")
     try:
         result = subprocess.run(
-            ["node", str(SLP_INSPECTOR), str(path)],
+            [node_executable(), str(SLP_INSPECTOR), str(path)],
             capture_output=True,
             text=True,
             timeout=20,
@@ -125,7 +180,8 @@ def validate_slp(path: Path, inspector: Callable[[Path], dict[str, object]] = in
         raise UploadError(
             422,
             "unsupported_character",
-            f"Both players must use Fox, Falco, Marth, or Sheik. Unsupported: {names}.",
+            f"Both players must use a calibrated MSL character "
+            f"({', '.join(SUPPORTED_CHARACTER_NAMES)}). Unsupported: {names}.",
         )
     return payload
 
@@ -267,14 +323,25 @@ def launch_training_mode_scenario(
     target_index: int,
     alternative_index: int,
     scenario_mode: str = "phillip",
+    variation_start_frame: int | None = None,
+    variation_source: str | None = None,
+    queue_mode: str = "standard",
 ) -> dict[str, Any]:
     validated = _review_id(review_id)
     if validated is None:
         raise UploadError(404, "review_not_found", "Review not found.")
-    if scenario_mode not in {"replay", "phillip"}:
-        raise UploadError(400, "invalid_training_mode", "Select replay or Phillip practice.")
+    if scenario_mode not in {"replay", "phillip", "variations"}:
+        raise UploadError(400, "invalid_training_mode", "Select replay, Phillip, or random-defense practice.")
     review_dir = upload_dir / validated
-    queue_path = review_dir / "pipeline" / "render_queue.json"
+    queue_names = {
+        "standard": "render_queue.json",
+        "phase-sweep": "phase_sweep_queue.json",
+        "disadvantage": "disadvantage/disadvantage_queue.json",
+    }
+    queue_name = queue_names.get(queue_mode)
+    if queue_name is None:
+        raise UploadError(400, "invalid_training_queue", "Select a valid review queue.")
+    queue_path = review_dir / "pipeline" / queue_name
     if not queue_path.is_file():
         raise UploadError(409, "training_unavailable", "This review has no Training Mode export queue.")
     try:
@@ -302,6 +369,9 @@ def launch_training_mode_scenario(
         scenario_mode,
         "--launch",
     )
+    if scenario_mode == "variations" and variation_start_frame is not None:
+        command.extend(("--variation-start-frame", str(variation_start_frame)))
+        command.extend(("--variation-source", variation_source or "replay"))
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     with TRAINING_MODE_LOCK:
         try:
@@ -356,6 +426,52 @@ def _directory_size(path: Path) -> int:
     return total
 
 
+def _estimated_processing(review: dict[str, object], standard_seconds: float) -> dict[str, object] | None:
+    if review.get("status") != "processing":
+        return None
+    progress = review.get("progress") if isinstance(review.get("progress"), dict) else {}
+    stage = str(progress.get("stage") or "processing")
+    completed_weight = sum(PIPELINE_STAGE_WEIGHTS[name] for name in PIPELINE_STAGE_ORDER[:PIPELINE_STAGE_ORDER.index(stage)]) if stage in PIPELINE_STAGE_WEIGHTS else 0
+    stage_weight = PIPELINE_STAGE_WEIGHTS.get(stage, 1)
+    preset = str(((review.get("settings") or {}).get("qualityPreset") if isinstance(review.get("settings"), dict) else None) or "standard")
+    baseline_total = standard_seconds * float(QUALITY_PRESETS.get(preset, QUALITY_PRESETS["standard"])["relativeCost"])
+    worker = review.get("worker") if isinstance(review.get("worker"), dict) else {}
+    started_raw = worker.get("startedAt")
+    elapsed_seconds = 0.0
+    if isinstance(started_raw, str):
+        try:
+            elapsed_seconds = max(0.0, (datetime.now(timezone.utc) - datetime.fromisoformat(started_raw.replace("Z", "+00:00"))).total_seconds())
+        except ValueError:
+            pass
+    stage_fraction = (completed_weight + stage_weight * 0.5) / sum(PIPELINE_STAGE_WEIGHTS.values())
+    estimated_fraction = min(0.96, max(0.01, stage_fraction))
+    # Stage cost is more reliable than cached/recovery wall-clock runs. Never
+    # predict an end earlier than the time already spent in this review.
+    estimated_total = max(baseline_total, elapsed_seconds / estimated_fraction)
+    active_phase_index = next((index for index, (_name, _label, stages) in enumerate(PIPELINE_PROGRESS_PHASES) if stage in stages), 0)
+    phases = []
+    for index, (name, label, stages) in enumerate(PIPELINE_PROGRESS_PHASES):
+        weight = sum(PIPELINE_STAGE_WEIGHTS[stage_name] for stage_name in stages)
+        phases.append({
+            "name": name,
+            "label": label,
+            "percentOfTotal": round(weight / sum(PIPELINE_STAGE_WEIGHTS.values()) * 100),
+            "estimatedSeconds": round(estimated_total * weight / sum(PIPELINE_STAGE_WEIGHTS.values())),
+            "status": "complete" if index < active_phase_index else "active" if index == active_phase_index else "pending",
+        })
+    return {
+        "stage": stage,
+        "label": PIPELINE_STAGE_COPY.get(stage, ("Analyzing replay", "Working through the review pipeline."))[0],
+        "detail": PIPELINE_STAGE_COPY.get(stage, ("Analyzing replay", "Working through the review pipeline."))[1],
+        "percent": round(estimated_fraction * 100, 1),
+        "elapsedSeconds": round(elapsed_seconds),
+        "estimatedTotalSeconds": round(estimated_total),
+        "estimatedRemainingSeconds": max(0, round(estimated_total * (1 - estimated_fraction))),
+        "stageWeight": stage_weight,
+        "phases": phases,
+    }
+
+
 def _review_metrics(upload_dir: Path, reviews: list[dict[str, object]]) -> tuple[list[dict[str, object]], dict[str, object]]:
     completed = []
     for review in reviews:
@@ -364,7 +480,7 @@ def _review_metrics(upload_dir: Path, reviews: list[dict[str, object]]) -> tuple
         if isinstance(seconds, (int, float)) and seconds > 0:
             preset = ((review.get("settings") or {}).get("qualityPreset") if isinstance(review.get("settings"), dict) else None) or "standard"
             completed.append(float(seconds) / float(QUALITY_PRESETS.get(str(preset), QUALITY_PRESETS["standard"])["relativeCost"]))
-    standard_seconds = sum(completed[-10:]) / len(completed[-10:]) if completed else 20 * 60.0
+    standard_seconds = max(20 * 60.0, sum(completed[-10:]) / len(completed[-10:])) if completed else 20 * 60.0
     queued = sorted((r for r in reviews if r.get("status") == "queued"), key=lambda r: str(r.get("createdAt") or ""))
     elapsed = 0.0
     queue_meta: dict[str, tuple[int, int]] = {}
@@ -382,6 +498,9 @@ def _review_metrics(upload_dir: Path, reviews: list[dict[str, object]]) -> tuple
         if str(review.get("reviewId")) in queue_meta:
             position, eta = queue_meta[str(review.get("reviewId"))]
             item["queue"] = {"position": position, "estimatedSeconds": eta}
+        estimate = _estimated_processing(review, standard_seconds)
+        if estimate:
+            item["estimatedProgress"] = estimate
         decorated.append(item)
     return decorated, {"totalBytes": total_bytes, "reviewCount": len(reviews), "estimatedStandardSeconds": round(standard_seconds)}
 
@@ -670,16 +789,29 @@ main{{width:min(720px,calc(100% - 28px));margin:54px auto}}.job{{border:1px soli
 .badge[data-state="failed"]{{color:var(--red);border-color:#80504d}}p{{margin:0 0 8px}}.muted{{color:var(--muted);font-size:12px}}
 .target-picker{{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}}.target-picker button{{min-height:38px;padding:8px 11px;border:1px solid #477b60;border-radius:4px;color:#07130d;background:var(--green);font-weight:800;cursor:pointer}}
 .review-link{{display:none;margin-top:16px;padding:9px 12px;border-radius:4px;color:#07130d;background:var(--green);font-weight:800;text-decoration:none}}
+.processing-progress{{margin:16px 0 4px;padding:12px;border:1px solid var(--line);border-radius:4px;background:#151815}}.processing-progress[hidden]{{display:none}}.processing-progress-head{{display:flex;justify-content:space-between;gap:12px;margin-bottom:8px;color:var(--muted);font-size:12px;font-weight:700}}.processing-progress strong{{color:var(--ink)}}.processing-progress progress{{width:100%;height:10px;accent-color:var(--green)}}.processing-progress small{{display:block;margin-top:7px;color:var(--muted);font-size:11px}}.progress-phases{{display:grid;gap:5px;margin:12px 0 0;padding:0;list-style:none}}.progress-phase{{display:grid;grid-template-columns:13px minmax(0,1fr) auto;gap:7px;align-items:center;color:var(--muted);font-size:12px}}.progress-phase::before{{content:'○';color:#67716a;font-size:15px;line-height:1}}.progress-phase[data-state="complete"]{{color:#c8ead7}}.progress-phase[data-state="complete"]::before{{content:'✓';color:var(--green)}}.progress-phase[data-state="active"]{{color:var(--ink);font-weight:700}}.progress-phase[data-state="active"]::before{{content:'●';color:var(--green)}}.progress-phase span:last-child{{font-size:11px;font-weight:400;color:var(--muted)}}
 </style></head><body><header><h1>Replay analysis</h1><a href="/">Dashboard</a></header><main><section class="job">
 <div class="job-head"><div><strong>{matchup}</strong><div class="muted">Review {review_id[:8]}</div></div><span class="badge" id="state" data-state="{state}">{state}</span></div>
-<div class="job-body"><p id="message">Waiting for an analysis worker.</p><p class="muted">Created {created}</p><div class="target-picker" id="target-picker">{target_buttons}</div><a class="review-link" id="review-link">Open completed review</a></div>
+<div class="job-body"><p id="message">Waiting for an analysis worker.</p><p class="muted">Created {created}</p><section class="processing-progress" id="processing-progress" hidden><div class="processing-progress-head"><strong id="progress-stage">Starting analysis</strong><span id="progress-percent">0%</span></div><progress id="progress-bar" max="100" value="0"></progress><small id="progress-detail"></small><ol class="progress-phases" id="progress-phases" aria-label="Analysis phases"></ol></section><div class="target-picker" id="target-picker">{target_buttons}</div><a class="review-link" id="review-link">Open completed review</a></div>
 </section></main><script>
 const reviewId={json.dumps(str(payload.get('reviewId') or ''))};
+const fmtTime=seconds=>seconds<90?`${{Math.round(seconds)}} sec`:seconds<5400?`${{Math.round(seconds/60)}} min`:`${{(seconds/3600).toFixed(1)}} hr`;
+function renderEstimatedProgress(review){{
+  const panel=document.querySelector('#processing-progress');const estimate=review.estimatedProgress;
+  panel.hidden=review.status!=='processing'||!estimate;if(panel.hidden)return;
+  document.querySelector('#progress-stage').textContent=estimate.label||'Analyzing replay';
+  document.querySelector('#progress-percent').textContent=`~${{Math.round(Number(estimate.percent)||0)}}%`;
+  document.querySelector('#progress-bar').value=Math.max(0,Math.min(100,Number(estimate.percent)||0));
+  document.querySelector('#progress-detail').textContent=`${{estimate.detail||'Working through the review pipeline.'}} Estimated · ${{fmtTime(Number(estimate.elapsedSeconds)||0)}} elapsed · ~${{fmtTime(Number(estimate.estimatedRemainingSeconds)||0)}} remaining`;
+  const phases=document.querySelector('#progress-phases');phases.replaceChildren();
+  for(const phase of estimate.phases||[]){{const item=document.createElement('li');item.className='progress-phase';item.dataset.state=phase.status||'pending';const time=Number(phase.estimatedSeconds)||0;item.innerHTML=`<span>${{phase.label}}</span><span>~${{phase.percentOfTotal}}% · ${{fmtTime(time)}}</span>`;phases.append(item);}}
+}}
 async function refresh(){{
   try{{const response=await fetch(`/api/reviews/${{reviewId}}`,{{cache:'no-store'}});if(!response.ok)return;
     const body=await response.json();const review=body.review;const state=document.querySelector('#state');
     state.textContent=review.status;state.dataset.state=review.status;
     document.querySelector('#message').textContent=review.message||({{awaiting_target:'Select the player to analyze.',queued:'Waiting for an analysis worker.',processing:'Analyzing replay...',complete:'Analysis complete.',failed:'Analysis failed.'}}[review.status]||'Waiting.');
+    renderEstimatedProgress(review);
     document.querySelector('#target-picker').hidden=review.status!=='awaiting_target';
     if(review.status==='complete'&&review.urls?.report){{const link=document.querySelector('#review-link');link.href=review.urls.report;link.style.display='inline-block';}}
     if(!['complete','failed'].includes(review.status))setTimeout(refresh,2000);
@@ -705,7 +837,7 @@ def make_handler(
     allow_remote: bool = False,
     allow_public: bool = False,
     access_token: str | None = None,
-    training_launcher: Callable[[Path, str, int, int, str], dict[str, Any]] = launch_training_mode_scenario,
+    training_launcher: Callable[..., dict[str, Any]] = launch_training_mode_scenario,
 ) -> type[SimpleHTTPRequestHandler]:
     root = root.resolve()
     msl_static = msl_static.resolve()
@@ -760,10 +892,13 @@ def make_handler(
                 return
             api_match = re.fullmatch(r"/api/reviews/([0-9a-f-]+)", pathname)
             if api_match:
-                review = _load_review(upload_dir, api_match.group(1))
+                review_id = api_match.group(1)
+                review = _load_review(upload_dir, review_id)
                 if review is None:
                     self._json_error(404, "review_not_found", "Review not found.")
                 else:
+                    decorated, _storage = _review_metrics(upload_dir, _list_reviews(upload_dir))
+                    review = next((item for item in decorated if item.get("reviewId") == review_id), review)
                     self._send_json(200, {"ok": True, "review": review})
                 return
             report_match = re.fullmatch(r"/reviews/([0-9a-f-]+)/report", pathname)
@@ -869,6 +1004,9 @@ def make_handler(
                 target_index = body.get("targetIndex") if isinstance(body, dict) else None
                 alternative_index = body.get("alternativeIndex", 0) if isinstance(body, dict) else None
                 scenario_mode = body.get("scenarioMode", "phillip") if isinstance(body, dict) else None
+                variation_start_frame = body.get("variationStartFrame") if isinstance(body, dict) else None
+                variation_source = body.get("variationSource", "replay") if isinstance(body, dict) else None
+                queue_mode = body.get("queueMode", "standard") if isinstance(body, dict) else None
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                 raise UploadError(400, "invalid_json", "The Training Mode request is not valid JSON.") from exc
             if (
@@ -876,10 +1014,28 @@ def make_handler(
                 or isinstance(target_index, bool)
                 or not isinstance(alternative_index, int)
                 or isinstance(alternative_index, bool)
-                or scenario_mode not in {"replay", "phillip"}
+                or scenario_mode not in {"replay", "phillip", "variations"}
+                or queue_mode not in {"standard", "phase-sweep", "disadvantage"}
+                or (
+                    scenario_mode == "variations"
+                    and (
+                        not isinstance(variation_start_frame, int)
+                        or isinstance(variation_start_frame, bool)
+                        or variation_source not in {"replay", "rollout"}
+                    )
+                )
             ):
                 raise UploadError(400, "invalid_training_route", "Select a valid insertion and route.")
-            scenario = training_launcher(upload_dir, review_id, target_index, alternative_index, str(scenario_mode))
+            scenario = training_launcher(
+                upload_dir,
+                review_id,
+                target_index,
+                alternative_index,
+                str(scenario_mode),
+                int(variation_start_frame) if scenario_mode == "variations" else None,
+                str(variation_source) if scenario_mode == "variations" else None,
+                str(queue_mode),
+            )
             self._send_json(200, {"ok": True, "scenario": scenario})
 
         def _handle_target_selection(self, review_id: str) -> None:

@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_settings
+from .disadvantage_pipeline import publish_disadvantage_artifacts
+from .neutral_pipeline import publish_neutral_artifacts
 from .paths import PACKAGE_DIR, PROJECT_DIR, module_command
 
 
@@ -27,17 +29,98 @@ def windows_to_wsl(path: Path) -> str:
     resolved = path.resolve()
     drive = resolved.drive.rstrip(":").lower()
     posix = resolved.as_posix()
+    for prefix in ("//wsl.localhost/", "//wsl$/"):
+        if posix.lower().startswith(prefix):
+            remainder = posix[len(prefix) :]
+            _distribution, separator, linux_path = remainder.partition("/")
+            if not separator:
+                raise ValueError(f"WSL UNC path has no Linux path component: {resolved}")
+            return f"/{linux_path}"
     return f"/mnt/{drive}{posix[len(resolved.drive):]}" if drive else posix
+
+
+def runtime_mode(args: argparse.Namespace, *, platform_name: str | None = None) -> str:
+    requested = str(getattr(args, "runtime_mode", "auto") or "auto").lower()
+    if requested not in {"auto", "native", "wsl"}:
+        raise ValueError(f"Unsupported runtime mode: {requested}")
+    if requested != "auto":
+        return requested
+    return "wsl" if (platform_name or sys.platform) == "win32" else "native"
+
+
+def runtime_path(args: argparse.Namespace, path: Path) -> str:
+    return windows_to_wsl(path) if runtime_mode(args) == "wsl" else str(path.resolve())
+
+
+def simulation_backend(args: argparse.Namespace) -> str:
+    backend = str(getattr(args, "simulation_backend", "legacy") or "legacy").lower()
+    if backend not in {"legacy", "decomp"}:
+        raise ValueError(f"Unsupported simulation backend: {backend}")
+    return backend
+
+
+def simulation_msl_root(args: argparse.Namespace) -> Path:
+    if simulation_backend(args) == "decomp":
+        root = getattr(args, "msl_decomp_root", None)
+        if root is None:
+            raise ValueError("decomp backend requires paths.msl_decomp_root or --msl-decomp-root")
+        return Path(root)
+    return Path(args.msl_root)
+
+
+def simulation_runtime_prefix(
+    args: argparse.Namespace,
+    *,
+    include_package_source: bool,
+    msl_root: Path | None = None,
+) -> list[str]:
+    package_source = PROJECT_DIR / "src"
+    active_root = (msl_root or simulation_msl_root(args)).resolve()
+    python_paths = [active_root, args.slippi_ai_root]
+    if include_package_source:
+        python_paths.insert(0, package_source)
+    separator = ":" if runtime_mode(args) == "wsl" else os.pathsep
+    environment = [
+        f"PYTHONPATH={separator.join(runtime_path(args, path) for path in python_paths)}",
+        f"MSL_DATA_DIR={runtime_path(args, active_root / 'data')}",
+    ]
+    cuda_library_path = str(getattr(args, "cuda_library_path", "") or "")
+    if cuda_library_path:
+        environment.append(f"LD_LIBRARY_PATH={cuda_library_path}")
+    if runtime_mode(args) == "wsl":
+        msl_env = str(getattr(args, "msl_env", "") or "")
+        if not msl_env:
+            raise ValueError("WSL runtime requires wsl.environment in the configuration")
+        return [
+            "wsl",
+            "env",
+            *environment,
+            str(getattr(args, "micromamba", "micromamba")),
+            "run",
+            "-p",
+            msl_env,
+            "python",
+        ]
+    return ["env", *environment, str(getattr(args, "runtime_python", sys.executable))]
 
 
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def set_queue_metadata(path: Path, *, display_name: str, slp_version: str | None) -> None:
+def set_queue_metadata(
+    path: Path,
+    *,
+    display_name: str,
+    slp_version: str | None,
+    backend: str = "legacy",
+) -> None:
     payload = read_json(path)
     changed = payload.get("display_name") != display_name
     payload["display_name"] = display_name
+    if payload.get("simulation_backend") != backend:
+        payload["simulation_backend"] = backend
+        changed = True
     if slp_version and payload.get("slp_version") != slp_version:
         payload["slp_version"] = slp_version
         changed = True
@@ -98,22 +181,20 @@ def msl_command(
     samples: int,
     dump_streams: bool,
 ) -> list[str]:
-    runner = PACKAGE_DIR / "simulation.py"
-    command = [
-        "wsl",
-        "env",
-        f"PYTHONPATH={windows_to_wsl(args.slippi_ai_root)}",
-        f"MSL_DATA_DIR={windows_to_wsl(args.msl_root)}/data",
-        f"LD_LIBRARY_PATH={args.cuda_library_path}",
-        args.micromamba,
-        "run",
-        "-p",
-        args.msl_env,
-        "python",
-        windows_to_wsl(runner),
-        "--replay", windows_to_wsl(args.replay),
+    backend = simulation_backend(args)
+    root = simulation_msl_root(args)
+    runner = PACKAGE_DIR / ("decomp_simulation.py" if backend == "decomp" else "simulation.py")
+    gpu_duty_cycle = getattr(args, "gpu_duty_cycle", 0.20)
+    command = simulation_runtime_prefix(
+        args,
+        include_package_source=backend == "decomp",
+        msl_root=root,
+    ) + [
+        "-u",
+        runtime_path(args, runner),
+        "--replay", runtime_path(args, args.replay),
         "--analyzed-port", str(args.controlled_port),
-        "--takeover-frames-json", windows_to_wsl(metadata),
+        "--takeover-frames-json", runtime_path(args, metadata),
         "--offsets", offsets,
         "--samples-per-point", str(samples),
         "--max-batch-lanes", str(args.max_batch_lanes),
@@ -135,14 +216,103 @@ def msl_command(
         "--option-horizon-frames", "90",
         "--option-max-action-segments", "6",
         "--option-max-input-segments", "8",
-        "--msl-root", windows_to_wsl(args.msl_root),
-        "--slippi-ai-root", windows_to_wsl(args.slippi_ai_root),
-        "--model", windows_to_wsl(args.model),
+        "--msl-root", runtime_path(args, root),
+        "--slippi-ai-root", runtime_path(args, args.slippi_ai_root),
+        "--model", runtime_path(args, args.model),
         "--enable-gpu",
-        "--out", windows_to_wsl(out_dir),
+        "--gpu-duty-cycle", str(gpu_duty_cycle),
+        "--out", runtime_path(args, out_dir),
     ]
     if dump_streams:
         command.append("--dump-controller-streams")
+    return command
+
+
+def neutral_command(args: argparse.Namespace, *, out_dir: Path, raw_events: Path) -> list[str]:
+    gpu_duty_cycle = getattr(args, "gpu_duty_cycle", 0.20)
+    # Neutral discovery still uses legacy validation buffers. Decomp is used by
+    # the advantage/phase rollout lane until neutral's lookback runner migrates.
+    command = simulation_runtime_prefix(args, include_package_source=True, msl_root=args.msl_root) + [
+        "-u",
+        "-m",
+        "slippi_ai_review.neutral_pipeline",
+        "--replay", runtime_path(args, args.replay),
+        "--raw-events-json", runtime_path(args, raw_events),
+        "--analyzed-port", str(args.controlled_port),
+        "--display-name", args.display_name,
+        "--preflight-samples", str(args.neutral_preflight_samples),
+        "--refinement-samples", str(args.neutral_refinement_samples),
+        "--max-batch-lanes", str(args.max_batch_lanes),
+        "--artifact-workers", str(max(1, min(2, args.render_workers))),
+        "--model", runtime_path(args, args.model),
+        "--msl-root", runtime_path(args, args.msl_root),
+        "--slippi-ai-root", runtime_path(args, args.slippi_ai_root),
+        "--out", runtime_path(args, out_dir),
+    ] + (["--slp-version", args.slp_version] if args.slp_version else [])
+    if getattr(args, "force", False):
+        command.append("--force")
+    if getattr(args, "neutral_enable_gpu", True):
+        command.append("--enable-gpu")
+    command.extend(["--gpu-duty-cycle", str(gpu_duty_cycle)])
+    return command
+
+
+def disadvantage_command(args: argparse.Namespace, *, inventory: Path, out_dir: Path) -> list[str]:
+    command = simulation_runtime_prefix(args, include_package_source=True, msl_root=args.msl_root) + [
+        "-u", "-m", "slippi_ai_review.disadvantage_pipeline",
+        "--replay", runtime_path(args, args.replay),
+        "--inventory", runtime_path(args, inventory),
+        "--analyzed-port", str(args.controlled_port),
+        "--display-name", args.display_name,
+        "--samples", str(args.disadvantage_samples),
+        "--rollout-frames", str(args.disadvantage_rollout_frames),
+        "--opponent-takeover-max-delay-frames", str(args.disadvantage_opponent_delay_frames),
+        "--max-batch-lanes", str(args.max_batch_lanes),
+        "--artifact-workers", str(max(1, min(2, args.render_workers))),
+        "--model", runtime_path(args, args.model),
+        "--msl-root", runtime_path(args, args.msl_root),
+        "--slippi-ai-root", runtime_path(args, args.slippi_ai_root),
+        "--out", runtime_path(args, out_dir),
+    ]
+    if args.force:
+        command.append("--force")
+    if args.disadvantage_enable_gpu:
+        command.extend(["--enable-gpu", "--gpu-duty-cycle", str(args.gpu_duty_cycle)])
+    return command
+
+
+def phase_sweep_command(args: argparse.Namespace, *, inventory: Path, out_dir: Path) -> list[str]:
+    """A cheap, renderable probe of every playable timeline segment."""
+    gpu_duty_cycle = getattr(args, "gpu_duty_cycle", 0.20)
+    backend = simulation_backend(args)
+    root = simulation_msl_root(args)
+    runner = PACKAGE_DIR / ("decomp_simulation.py" if backend == "decomp" else "simulation.py")
+    command = simulation_runtime_prefix(args, include_package_source=True, msl_root=root) + [
+        "-u", runtime_path(args, runner),
+        "--replay", runtime_path(args, args.replay),
+        "--analyzed-port", str(args.controlled_port),
+        "--takeover-frames-json", runtime_path(args, inventory),
+        "--offsets", "0",
+        "--samples-per-point", str(args.phase_sweep_samples),
+        "--max-batch-lanes", str(args.max_batch_lanes),
+        "--objective", "general",
+        "--rollout-frames", "120",
+        "--defense-resolution-extra-frames", "0",
+        "--defense-resolution-min-frames", "120",
+        "--defender-delay-frames", "121",
+        "--defender-takeover-mode", "observed-phase-followup",
+        "--warmup-frames", "90",
+        "--history-mode", "teacher-forced",
+        "--opponent-mode", "replay",
+        "--rng-mode", "replay",
+        "--dump-controller-streams",
+        "--msl-root", runtime_path(args, root),
+        "--slippi-ai-root", runtime_path(args, args.slippi_ai_root),
+        "--model", runtime_path(args, args.model),
+        "--out", runtime_path(args, out_dir),
+    ]
+    if getattr(args, "phase_sweep_enable_gpu", True):
+        command.extend(["--enable-gpu", "--gpu-duty-cycle", str(gpu_duty_cycle)])
     return command
 
 
@@ -153,6 +323,21 @@ def publish_artifacts(source: Path, destination: Path) -> None:
         backup = destination.parent / f"{destination.name}.previous.{int(time.time())}"
         os.replace(destination, backup)
     os.replace(staging, destination)
+
+
+def publish_phase_sweep_artifacts(source: Path, destination: Path) -> None:
+    """Overlay phase decks and their self-contained viewer data on the review artifact set."""
+    for name in ("advantage_review.html", "neutral_review.html", "disadvantage_review.html"):
+        if name == "advantage_review.html" and (destination / name).is_file():
+            continue
+        shutil.copy2(source / name, destination / name)
+    for folder in ("traces", "viewer"):
+        source_folder = source / folder
+        destination_folder = destination / folder
+        destination_folder.mkdir(parents=True, exist_ok=True)
+        for item in source_folder.iterdir():
+            if item.is_file():
+                shutil.copy2(item, destination_folder / item.name)
 
 
 def build_empty_report(args: argparse.Namespace, work: Path, candidates: dict[str, Any]) -> Path:
@@ -203,19 +388,41 @@ def main() -> int:
     settings = load_settings()
     parser.add_argument("--model", type=Path, default=settings.model)
     parser.add_argument("--msl-root", type=Path, default=settings.msl_root)
+    parser.add_argument("--msl-decomp-root", type=Path, default=settings.msl_decomp_root)
     parser.add_argument("--slippi-ai-root", type=Path, default=settings.slippi_ai_root)
     parser.add_argument("--iso", type=Path, default=settings.melee_iso)
+    parser.add_argument("--runtime-mode", choices=("auto", "native", "wsl"), default=settings.runtime_mode)
+    parser.add_argument("--runtime-python", default=settings.runtime_python)
+    parser.add_argument(
+        "--simulation-backend",
+        choices=("legacy", "decomp"),
+        default=settings.simulation_backend,
+    )
     parser.add_argument("--micromamba", default=settings.micromamba)
     parser.add_argument("--msl-env", default=settings.msl_env)
     parser.add_argument("--cuda-library-path", default=settings.cuda_library_path)
     parser.add_argument("--preflight-samples", type=int, default=64)
     parser.add_argument("--refinement-samples", type=int, default=128)
+    parser.add_argument("--neutral-preflight-samples", type=int, default=48)
+    parser.add_argument("--neutral-refinement-samples", type=int, default=192)
+    parser.add_argument("--neutral-enable-gpu", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--disadvantage-samples", type=int, default=16)
+    parser.add_argument("--disadvantage-rollout-frames", type=int, default=180)
+    parser.add_argument("--disadvantage-opponent-delay-frames", type=int, default=60)
+    parser.add_argument("--disadvantage-enable-gpu", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--gpu-duty-cycle", type=float, default=0.20)
+    parser.add_argument("--phase-sweep-samples", type=int, default=12)
+    parser.add_argument("--phase-sweep-enable-gpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-batch-lanes", type=int, default=4096)
     parser.add_argument("--render-workers", type=int, default=4)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    if not 0 < args.gpu_duty_cycle <= 1:
+        raise SystemExit("--gpu-duty-cycle must be in (0, 1]")
 
     missing = [name for name in ("model", "msl_root", "slippi_ai_root", "iso") if getattr(args, name) is None]
+    if args.simulation_backend == "decomp" and args.msl_decomp_root is None:
+        missing.append("msl_decomp_root")
     if missing:
         raise SystemExit(f"Missing required paths: {', '.join(missing)}. Configure them or pass explicit flags.")
 
@@ -223,10 +430,15 @@ def main() -> int:
     args.job_dir = args.job_dir.resolve()
     args.model = args.model.resolve()
     args.msl_root = args.msl_root.resolve()
+    if args.msl_decomp_root is not None:
+        args.msl_decomp_root = args.msl_decomp_root.resolve()
     args.slippi_ai_root = args.slippi_ai_root.resolve()
     args.iso = args.iso.resolve()
     args.display_name = args.display_name or args.replay.stem
-    for path in (args.replay, args.model, args.msl_root, args.slippi_ai_root, args.iso):
+    required_paths = [args.replay, args.model, args.msl_root, args.slippi_ai_root, args.iso]
+    if args.simulation_backend == "decomp":
+        required_paths.append(args.msl_decomp_root)
+    for path in required_paths:
         if not path.exists():
             raise FileNotFoundError(path)
 
@@ -235,11 +447,17 @@ def main() -> int:
     candidates_path = pipeline / "candidates.json"
     coverage_path = pipeline / "candidate_coverage.md"
     raw_events_path = pipeline / "raw_events.json"
+    phase_sweep_inventory = pipeline / "phase_sweep_inventory.json"
+    phase_sweep_run = pipeline / "phase_sweep"
+    phase_sweep_queue = pipeline / "phase_sweep_queue.json"
+    phase_sweep_artifacts = pipeline / "phase_sweep_artifacts"
     preflight = pipeline / "preflight"
     preflight_queue = pipeline / "preflight_selection.json"
     refinement = pipeline / "refinement"
     render_queue = pipeline / "render_queue.json"
     report_root = pipeline / "report"
+    neutral_root = pipeline / "neutral"
+    disadvantage_root = pipeline / "disadvantage"
     pipeline.mkdir(parents=True, exist_ok=True)
     timings: dict[str, float] = {}
 
@@ -256,11 +474,33 @@ def main() -> int:
     else:
         emit("candidates", "Reusing completed candidates stage.")
     candidates = read_json(candidates_path)
+    if args.force or not phase_sweep_inventory.is_file():
+        timeline = Path(str(candidates.get("timeline") or ""))
+        if not timeline.is_file():
+            raise FileNotFoundError(f"Candidate timeline missing: {timeline}")
+        timings["phase_sweep_inventory"] = run_stage("phase_sweep_inventory", module_command(
+            "phase_sweep",
+            "--timeline", str(timeline),
+            "--analyzed-port", str(args.controlled_port),
+            "--out", str(phase_sweep_inventory),
+        ), logs / "phase_sweep_inventory.log")
+    else:
+        emit("phase_sweep_inventory", "Reusing phase sweep inventory.")
+    if args.force or not (phase_sweep_run / "summary.json").is_file():
+        timings["phase_sweep"] = run_stage(
+            "phase_sweep",
+            phase_sweep_command(args, inventory=phase_sweep_inventory, out_dir=phase_sweep_run),
+            logs / "phase_sweep.log",
+        )
+    else:
+        emit("phase_sweep", "Reusing low-sample phase sweep.")
 
     if args.force or not (preflight / "summary.json").is_file():
         timings["preflight"] = run_stage(
             "preflight",
-            msl_command(args, metadata=candidates_path, out_dir=preflight, offsets="0", samples=args.preflight_samples, dump_streams=False),
+            # Preserve low-sample controller streams so the coverage sweep can
+            # promote any reviewed phase into a visible slide without re-running it.
+            msl_command(args, metadata=candidates_path, out_dir=preflight, offsets="0", samples=args.preflight_samples, dump_streams=True),
             logs / "preflight.log",
         )
     else:
@@ -283,7 +523,12 @@ def main() -> int:
         ), logs / "preflight_selection.log")
     else:
         emit("preflight_selection", "Reusing completed preflight selection.")
-    set_queue_metadata(preflight_queue, display_name=args.display_name, slp_version=args.slp_version)
+    set_queue_metadata(
+        preflight_queue,
+        display_name=args.display_name,
+        slp_version=args.slp_version,
+        backend=args.simulation_backend,
+    )
 
     preflight_payload = read_json(preflight_queue)
     if not (preflight_payload.get("targets") or []):
@@ -317,7 +562,12 @@ def main() -> int:
             ), logs / "route_selection.log")
         else:
             emit("route_selection", "Reusing completed route selection.")
-        set_queue_metadata(render_queue, display_name=args.display_name, slp_version=args.slp_version)
+        set_queue_metadata(
+            render_queue,
+            display_name=args.display_name,
+            slp_version=args.slp_version,
+            backend=args.simulation_backend,
+        )
 
         queue_payload = read_json(render_queue)
         if not (queue_payload.get("targets") or []):
@@ -335,15 +585,108 @@ def main() -> int:
                 emit("artifacts", "Reusing completed report artifacts.")
             source_artifacts = report_root / "final_artifacts"
 
+    neutral_artifacts = neutral_root / "artifacts_build" / "final_artifacts"
+    expected_neutral_report = neutral_artifacts / "neutral_review.html"
+    expected_neutral_grid = neutral_root / "route_grid" / "lanes.jsonl"
+    if args.force or not expected_neutral_report.is_file() or not expected_neutral_grid.is_file():
+        timings["neutral"] = run_stage(
+            "neutral",
+            neutral_command(args, out_dir=neutral_root, raw_events=raw_events_path),
+            logs / "neutral.log",
+        )
+    else:
+        emit("neutral", "Reusing completed neutral-loss analysis.")
+    if not expected_neutral_report.is_file():
+        raise FileNotFoundError(f"Neutral pipeline did not create {expected_neutral_report}")
+
+    disadvantage_artifacts = disadvantage_root / "artifacts_build" / "final_artifacts"
+    expected_disadvantage_report = disadvantage_artifacts / "disadvantage_review.html"
+    expected_disadvantage_summary = disadvantage_root / "disadvantage_pipeline_summary.json"
+    if args.force or not expected_disadvantage_report.is_file() or not expected_disadvantage_summary.is_file():
+        timings["disadvantage"] = run_stage(
+            "disadvantage",
+            disadvantage_command(args, inventory=phase_sweep_inventory, out_dir=disadvantage_root),
+            logs / "disadvantage.log",
+        )
+    else:
+        emit("disadvantage", "Reusing completed disadvantage analysis.")
+    if not expected_disadvantage_report.is_file():
+        raise FileNotFoundError(f"Disadvantage pipeline did not create {expected_disadvantage_report}")
+
+    advantage_manifest = source_artifacts / "advantage_improvements.json"
+    if not advantage_manifest.is_file():
+        raise FileNotFoundError(f"Advantage pipeline did not create {advantage_manifest}")
+    timings["report_navigation"] = run_stage(
+        "report_navigation",
+        module_command(
+            "report",
+            "--manifest", advantage_manifest,
+            "--out", source_artifacts / "advantage_review.html",
+        ),
+        logs / "report_navigation.log",
+    )
+    phase_sweep_final = phase_sweep_artifacts / "final_artifacts"
+    if args.force or not phase_sweep_queue.is_file():
+        timings["phase_sweep_selection"] = run_stage("phase_sweep_selection", module_command(
+            "phase_sweep_selection",
+            "--inventory", str(phase_sweep_inventory),
+            "--run-dir", str(phase_sweep_run),
+            "--out", str(phase_sweep_queue),
+        ), logs / "phase_sweep_selection.log")
+    else:
+        emit("phase_sweep_selection", "Reusing phase sweep selection.")
+    set_queue_metadata(
+        phase_sweep_queue,
+        display_name=args.display_name,
+        slp_version=args.slp_version,
+        backend=args.simulation_backend,
+    )
+    if args.force or not (phase_sweep_final / "advantage_improvements.json").is_file():
+        timings["phase_sweep_artifacts"] = run_stage("phase_sweep_artifacts", module_command(
+            "artifacts",
+            "--queue-json", str(phase_sweep_queue),
+            "--out-root", str(phase_sweep_artifacts),
+            "--workers", str(args.render_workers),
+        ), logs / "phase_sweep_artifacts.log")
+    else:
+        emit("phase_sweep_artifacts", "Reusing phase sweep traces.")
+    phase_sweep_reports = tuple(
+        phase_sweep_final / f"{phase}_review.html"
+        for phase in ("advantage", "neutral", "disadvantage")
+    )
+    if args.force or any(not report.is_file() for report in phase_sweep_reports):
+        timings["phase_sweep_report"] = run_stage("phase_sweep_report", module_command(
+            "phase_sweep_report",
+            "--queue-json", str(phase_sweep_queue),
+            "--manifest", str(phase_sweep_final / "advantage_improvements.json"),
+            "--out-dir", str(phase_sweep_final),
+        ), logs / "phase_sweep_report.log")
+    else:
+        emit("phase_sweep_report", "Reusing phase sweep slide decks.")
+    publish_phase_sweep_artifacts(phase_sweep_final, source_artifacts)
+    # The low-sample phase sweep provides complete fallback navigation. Refined
+    # phase-specific decks then replace only their own pages and trace families.
+    publish_neutral_artifacts(neutral_artifacts, source_artifacts)
+    publish_disadvantage_artifacts(disadvantage_artifacts, source_artifacts)
+
     emit("publish", "Publishing review artifacts.")
     publish_artifacts(source_artifacts, args.job_dir / "artifacts")
     summary = {
         "status": "complete",
         "replay": str(args.replay),
         "controlledPort": args.controlled_port,
+        "simulationBackend": args.simulation_backend,
+        "phaseBackends": {
+            "advantage": args.simulation_backend,
+            "phaseSweep": args.simulation_backend,
+            "neutral": "legacy",
+            "disadvantage": "legacy",
+        },
         "candidateCount": len(candidates.get("frames") or []),
         "timings": timings,
         "report": str((args.job_dir / "artifacts" / "advantage_review.html").resolve()),
+        "neutralReport": str((args.job_dir / "artifacts" / "neutral_review.html").resolve()),
+        "disadvantageReport": str((args.job_dir / "artifacts" / "disadvantage_review.html").resolve()),
     }
     (pipeline / "pipeline_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     emit("complete", "Analysis artifacts are ready.", report="advantage_review.html")
