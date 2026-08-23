@@ -19,7 +19,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       LEGACY_COMMIT: dadf7f082cc1ae41d9f05ebd26e5c2bdb4ce6fd6
-      DECOMP_COMMIT: a68dcd50df121d0ef72987ca658b3243047eca75
+      DECOMP_COMMIT: 265deb057c36d6ecdc3bc3fa2ee07e1b917b4fc3
       GIT_LFS_SKIP_SMUDGE: "1"
     steps:
       - uses: actions/checkout@v5
@@ -62,6 +62,10 @@ jobs:
             git -C "source/$runtime" checkout --detach FETCH_HEAD
             test "$(git -C "source/$runtime" rev-parse HEAD)" = "$commit"
           done
+
+      - name: Install native LLVM toolchain
+        run: |
+          brew list llvm >/dev/null 2>&1 || brew install llvm
 
       - name: Build native wheels
         run: |

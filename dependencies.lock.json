@@ -12,9 +12,9 @@
       },
       "decomp": {
         "path": "vendor/runtimes/linux-x86_64/msl-decomp-0.0.0-cp312-cp312-linux_x86_64.whl",
-        "sha256": "7f0dc2f74c25764cf41d6e02f74e83bbe64f878579f89f6c95b4d8d1ef923c8b",
+        "sha256": "163ec75338c3021d6898effac88f8d7e5ca880a91c4db7e8cc13de2a47060f5a",
         "directory": "msl-decomp",
-        "sourceCommit": "a68dcd50df121d0ef72987ca658b3243047eca75"
+        "sourceCommit": "265deb057c36d6ecdc3bc3fa2ee07e1b917b4fc3"
       }
     }
   },
@@ -26,7 +26,7 @@
     },
     "msl-decomp": {
       "url": "https://github.com/dhambly/melee-sim-light.git",
-      "commit": "a68dcd50df121d0ef72987ca658b3243047eca75",
+      "commit": "265deb057c36d6ecdc3bc3fa2ee07e1b917b4fc3",
       "directory": "msl-decomp"
     },
     "slippi-ai": {
