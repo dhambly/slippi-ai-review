@@ -26,16 +26,17 @@ REFINEMENT_MIN_OPTION_SAMPLES = 8
 
 
 def windows_to_wsl(path: Path) -> str:
+    raw = str(path).replace("\\", "/")
+    for prefix in ("//wsl.localhost/", "//wsl$/"):
+        if raw.lower().startswith(prefix):
+            remainder = raw[len(prefix) :]
+            _distribution, separator, linux_path = remainder.partition("/")
+            if not separator:
+                raise ValueError(f"WSL UNC path has no Linux path component: {path}")
+            return f"/{linux_path}"
     resolved = path.resolve()
     drive = resolved.drive.rstrip(":").lower()
     posix = resolved.as_posix()
-    for prefix in ("//wsl.localhost/", "//wsl$/"):
-        if posix.lower().startswith(prefix):
-            remainder = posix[len(prefix) :]
-            _distribution, separator, linux_path = remainder.partition("/")
-            if not separator:
-                raise ValueError(f"WSL UNC path has no Linux path component: {resolved}")
-            return f"/{linux_path}"
     return f"/mnt/{drive}{posix[len(resolved.drive):]}" if drive else posix
 
 
