@@ -6,21 +6,23 @@ melee-sim-light, and publishes linked interactive reports for both phases.
 Selected advantage routes can also be exported to Training Mode Community
 Edition for hands-on practice.
 
-This repository contains the application plus checksum-pinned Linux x86_64 MSL
-runtime wheels. Models, game images, replays, generated reports, upstream
-source checkouts, and extracted emulator data are not vendored.
+This repository contains the application plus checksum-pinned MSL runtime
+wheels for Linux x86_64 and macOS on Apple Silicon and Intel. Models, game
+images, replays, generated reports, upstream source checkouts, and extracted
+emulator data are not vendored.
 
 ## Distribution
 
 [`dependencies.lock.json`](dependencies.lock.json) pins the exact tested MSL
-and `slippi-ai` revisions. Linux x86_64 installs both MSL backends from the
-verified wheels already in this repository. Other hosts build the same pinned
-revisions automatically into `.runtime/`; users do not manage MSL checkouts.
+and `slippi-ai` revisions. Supported Linux and macOS hosts install both MSL
+backends from the verified wheels already in this repository. Unsupported
+architectures can build the same pinned revisions automatically into
+`.runtime/`; users do not manage MSL checkouts.
 
 The automated native setup supports:
 
 - Linux x86_64 with bundled runtimes; Linux arm64 uses source fallback
-- macOS 12+ on Apple Silicon, with an Intel macOS compatibility pin
+- macOS 12+ on Apple Silicon or Intel with bundled runtimes
 - Python 3.12 and Node.js 20, installed locally by the bootstrap
 - CPU inference on both operating systems; Linux NVIDIA acceleration is optional
 - a Phillip-compatible model such as `gm-v2`

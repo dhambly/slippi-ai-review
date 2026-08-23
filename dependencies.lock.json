@@ -16,6 +16,34 @@
         "directory": "msl-decomp",
         "sourceCommit": "003c03d6a0fec63897bd4c7dac295a4e60600aed"
       }
+    },
+    "macos-arm64-cp312": {
+      "legacy": {
+        "path": "vendor/runtimes/macos-arm64/msl-legacy-0.0.0-cp312-cp312-macosx_12_0_universal2.whl",
+        "sha256": "30465e65f097887162c6141d176b2ac921b7587860aeeb6a120db7910874e9d3",
+        "directory": "msl-legacy",
+        "sourceCommit": "dadf7f082cc1ae41d9f05ebd26e5c2bdb4ce6fd6"
+      },
+      "decomp": {
+        "path": "vendor/runtimes/macos-arm64/msl-decomp-0.0.0-cp312-cp312-macosx_12_0_universal2.whl",
+        "sha256": "42b3f5e0a61f3dc01f8ab6160c7ff82d1c0f204603753ee541e310a48c302e72",
+        "directory": "msl-decomp",
+        "sourceCommit": "003c03d6a0fec63897bd4c7dac295a4e60600aed"
+      }
+    },
+    "macos-x86_64-cp312": {
+      "legacy": {
+        "path": "vendor/runtimes/macos-x86_64/msl-legacy-0.0.0-cp312-cp312-macosx_12_0_universal2.whl",
+        "sha256": "971be217c2b0b8367a7c77706e396418bcb8352b2ecc82d93d3e469c62ea0c6d",
+        "directory": "msl-legacy",
+        "sourceCommit": "dadf7f082cc1ae41d9f05ebd26e5c2bdb4ce6fd6"
+      },
+      "decomp": {
+        "path": "vendor/runtimes/macos-x86_64/msl-decomp-0.0.0-cp312-cp312-macosx_12_0_universal2.whl",
+        "sha256": "e0cbbe4c759d2626da04c000a56c8e512a03e3b33a0f39fe9732b4938e1df966",
+        "directory": "msl-decomp",
+        "sourceCommit": "003c03d6a0fec63897bd4c7dac295a4e60600aed"
+      }
     }
   },
   "sourceDependencies": {

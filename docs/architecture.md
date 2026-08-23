@@ -7,7 +7,7 @@ The application owns one workflow:
 1. validate and store a Slippi replay;
 2. choose the analyzed player and sampling preset;
 3. enumerate advantage opportunities from Slippi events;
-4. sample Phillip/MSL continuations in WSL;
+4. sample Phillip/MSL continuations in a native or WSL runtime;
 5. select robust option families against the replay baseline;
 6. export synchronized replay and counterfactual traces;
 7. publish an interactive HTML report;
@@ -39,9 +39,11 @@ the queue and reuses completed stage outputs.
 
 ## External Dependencies
 
-`slippi-ai` and `melee-sim-light` remain upstream checkouts because the model and
-simulator use their native runtime/data layouts. The app passes their configured
-locations explicitly; no production module searches a developer workspace.
+`slippi-ai` remains a pinned upstream checkout because Phillip uses its model
+runtime. Bundled platforms unpack both `melee-sim-light` backends from verified
+native wheels; source fallback checkouts are managed automatically. The app
+passes every runtime location explicitly, and no production module searches a
+developer workspace.
 
 Punish simulations use recorded-contact anchoring: for an opening already
 present in the replay, the branch begins on the first recorded physics frame

@@ -20,17 +20,28 @@ SPEC.loader.exec_module(bootstrap)
 class BootstrapTests(unittest.TestCase):
     def test_locked_runtime_artifacts_match_checksums(self) -> None:
         lock = json.loads((ROOT / "dependencies.lock.json").read_text(encoding="utf-8"))
-        specs = lock["runtimeBundles"]["linux-x86_64-cp312"]
-        for runtime in ("legacy", "decomp"):
-            artifact = ROOT / specs[runtime]["path"]
-            actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
-            self.assertEqual(actual, specs[runtime]["sha256"])
+        for platform_key, specs in lock["runtimeBundles"].items():
+            for runtime in ("legacy", "decomp"):
+                artifact = ROOT / specs[runtime]["path"]
+                with self.subTest(platform=platform_key, runtime=runtime):
+                    actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                    self.assertEqual(actual, specs[runtime]["sha256"])
 
     def test_runtime_platform_key_normalizes_x86_64(self) -> None:
         with mock.patch.object(bootstrap.sys, "platform", "linux"), mock.patch.object(
             bootstrap.platform, "machine", return_value="AMD64"
         ):
             self.assertEqual(bootstrap.runtime_platform_key(), "linux-x86_64-cp312")
+
+    def test_runtime_platform_key_selects_macos_architecture(self) -> None:
+        for machine, expected in (
+            ("arm64", "macos-arm64-cp312"),
+            ("x86_64", "macos-x86_64-cp312"),
+        ):
+            with self.subTest(machine=machine), mock.patch.object(
+                bootstrap.sys, "platform", "darwin"
+            ), mock.patch.object(bootstrap.platform, "machine", return_value=machine):
+                self.assertEqual(bootstrap.runtime_platform_key(), expected)
 
     def test_runtime_artifact_is_verified_extracted_and_reused(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

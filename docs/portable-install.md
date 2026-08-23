@@ -1,20 +1,20 @@
 # Portable Installation
 
 The review stack is operated from this repository. `dependencies.lock.json`
-pins Phillip and both MSL backends to exact commits. Linux x86_64 clones already
-contain checksum-pinned MSL wheels under `vendor/runtimes/`, so setup does not
-need another MSL checkout or compiler. Bootstrap unpacks each backend into
-`.runtime/`, fetches Phillip at its pinned public commit, installs Node,
-extracts legal simulator data, writes the local configuration, and runs an
-import smoke test.
+pins Phillip and both MSL backends to exact commits. Linux x86_64 and macOS
+clones already contain checksum-pinned MSL wheels under `vendor/runtimes/`, so
+setup does not need another MSL checkout or compiler. Bootstrap unpacks each
+backend into `.runtime/`, fetches Phillip at its pinned public commit, installs
+Node, extracts legal simulator data, writes the local configuration, and runs
+an import smoke test.
 
-macOS and Linux arm64 use the same command and automatically build the locked
-MSL revisions from source. Those managed source trees live under `.deps/` and
-do not require manual coordination.
+Linux arm64 uses the same command and automatically builds the locked MSL
+revisions from source. Those managed source trees live under `.deps/` and do
+not require manual coordination.
 
 The model, ISO, uploaded replays, and generated reviews remain outside Git.
 The source fallback uses the private MSL fork. Authenticate Git before setup on
-macOS, Linux arm64, or when explicitly passing `--from-source`:
+Linux arm64, an unbundled host, or when explicitly passing `--from-source`:
 
 ```bash
 gh auth login
@@ -29,8 +29,9 @@ hanging.
 ## Supported Hosts
 
 - Linux x86_64. A C11 compiler is only needed on arm64 or with `--from-source`.
-- macOS 12 or newer with Xcode Command Line Tools. Apple Silicon uses TensorFlow 2.21; Intel macOS uses the
-  final Intel-compatible TensorFlow 2.16.2 runtime.
+- macOS 12 or newer. Apple Silicon uses TensorFlow 2.21; Intel macOS uses the
+  final Intel-compatible TensorFlow 2.16.2 runtime. Xcode Command Line Tools
+  are only needed with `--from-source`.
 - Python 3.12, installed by `uv`.
 - CPU inference is the portable baseline.
 
@@ -75,13 +76,11 @@ python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU')
 
 ## macOS
 
-Install Apple's compiler tools and `uv`:
+Install `uv` (`gh` is only needed to clone this private application repository):
 
 ```bash
-xcode-select --install
 brew install gh
 gh auth login
-gh auth setup-git
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source "$HOME/.local/bin/env"
 ```
