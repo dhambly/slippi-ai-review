@@ -14,5 +14,7 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 uv python install 3.12
-uv venv --python 3.12 --seed "$ROOT/.venv"
+if [ ! -x "$ROOT/.venv/bin/python" ]; then
+  uv venv --python 3.12 --seed "$ROOT/.venv"
+fi
 "$ROOT/.venv/bin/python" "$ROOT/scripts/bootstrap.py" "$@"
