@@ -1,0 +1,14 @@
+# Phillip's tested TensorFlow runtime. slippi-ai's `tf` extra intentionally
+# follows nightly releases, so the review package pins a reproducible stable pair.
+dm-sonnet==2.0.2
+tensorflow==2.21.0; platform_system != "Darwin" or platform_machine != "x86_64"
+tensorflow-probability[tf]==0.25.0; platform_system != "Darwin" or platform_machine != "x86_64"
+tf-keras==2.21.0; platform_system != "Darwin" or platform_machine != "x86_64"
+
+# TensorFlow 2.16.2 was the final Intel macOS release.
+tensorflow==2.16.2; platform_system == "Darwin" and platform_machine == "x86_64"
+tensorflow-probability[tf]==0.24.0; platform_system == "Darwin" and platform_machine == "x86_64"
+tf-keras==2.16.0; platform_system == "Darwin" and platform_machine == "x86_64"
+
+# Installs the pinned Node runtime into the same Python virtual environment.
+nodeenv==1.9.1

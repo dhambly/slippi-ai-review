@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 2,
+  "python": "3.12",
+  "node": "20.19.4",
+  "runtimeBundles": {
+    "linux-x86_64-cp312": {
+      "legacy": {
+        "path": "vendor/runtimes/linux-x86_64/msl-legacy-0.0.0-cp312-cp312-linux_x86_64.whl",
+        "sha256": "79286ff8ce4aab23646962cdd8aaede70f932388f39d785c55a6aae303117755",
+        "directory": "msl-legacy",
+        "sourceCommit": "dadf7f082cc1ae41d9f05ebd26e5c2bdb4ce6fd6"
+      },
+      "decomp": {
+        "path": "vendor/runtimes/linux-x86_64/msl-decomp-0.0.0-cp312-cp312-linux_x86_64.whl",
+        "sha256": "7f0dc2f74c25764cf41d6e02f74e83bbe64f878579f89f6c95b4d8d1ef923c8b",
+        "directory": "msl-decomp",
+        "sourceCommit": "a68dcd50df121d0ef72987ca658b3243047eca75"
+      }
+    }
+  },
+  "sourceDependencies": {
+    "msl-legacy": {
+      "url": "https://github.com/dhambly/melee-sim-light.git",
+      "commit": "dadf7f082cc1ae41d9f05ebd26e5c2bdb4ce6fd6",
+      "directory": "msl-legacy"
+    },
+    "msl-decomp": {
+      "url": "https://github.com/dhambly/melee-sim-light.git",
+      "commit": "a68dcd50df121d0ef72987ca658b3243047eca75",
+      "directory": "msl-decomp"
+    },
+    "slippi-ai": {
+      "url": "https://github.com/vladfi1/slippi-ai.git",
+      "commit": "b066a66e656f948b2ad1ccf7bb77a8b583b6f11d",
+      "directory": "slippi-ai",
+      "patch": "patches/slippi-ai-msl-api.patch",
+      "patchSha256": "7f4d794b134da7d544ce0065307b85c6a896dfa40a3e889657ded23456eb4e75"
+    }
+  }
+}

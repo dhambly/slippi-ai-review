@@ -1,0 +1,20 @@
+diff --git a/slippi_ai/sim_env/env.py b/slippi_ai/sim_env/env.py
+index 2b5d932..2ac62e1 100644
+--- a/slippi_ai/sim_env/env.py
++++ b/slippi_ai/sim_env/env.py
+@@ -180,7 +180,13 @@ class SimBatchedEnvironment:
+         num_players=2,
+         data_dir=data_dir,
+     )
+-    self._buffers = self._env.buffers(action_format='controller')
+-    self._env.configure_matches(self._buffers, match_configs)
++    if hasattr(self._env, 'allocate_buffers'):
++      self._buffers = self._env.allocate_buffers(action_format='controller')
++    else:
++      self._buffers = self._env.buffers(action_format='controller')
++    try:
++      self._env.configure_matches(match_configs, buffers=self._buffers)
++    except TypeError:
++      self._env.configure_matches(self._buffers, match_configs)
+     self._env.bind(self._buffers)
+     self._env.reset_all()

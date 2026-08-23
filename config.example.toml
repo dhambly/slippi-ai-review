@@ -1,16 +1,27 @@
 [paths]
 data_dir = "./data"
-model = "D:/models/gm-v2"
-msl_root = "D:/code/melee-sim-light-dev"
-slippi_ai_root = "D:/code/slippi-ai"
-melee_iso = "C:/Melee/melee.iso"
+model = "/absolute/path/to/gm-v2"
+msl_root = "/absolute/path/to/slippi-ai-review/.runtime/msl-legacy"
+# Installed beside the legacy runtime by bootstrap. Legacy remains the default
+# until parity reports approve a full cutover.
+msl_decomp_root = "/absolute/path/to/slippi-ai-review/.runtime/msl-decomp"
+slippi_ai_root = "/absolute/path/to/slippi-ai-review/.deps/slippi-ai"
+melee_iso = "/absolute/path/to/GALE01.iso"
 
+[runtime]
+# "auto" selects WSL on Windows and native execution on Linux/macOS.
+mode = "auto"
+python = "/absolute/path/to/slippi-ai-review/.venv/bin/python"
+simulation_backend = "legacy" # legacy or decomp
+
+# Windows/WSL compatibility only. Native Linux/macOS ignores this section.
 [wsl]
 micromamba = "/home/USER/.local/bin/micromamba"
 environment = "/home/USER/.local/envs/msl-gpu"
 cuda_library_path = "/usr/lib/wsl/lib"
 
 [training_mode]
+# Training Mode export/playback is currently Windows-only and optional.
 tm_replay = "D:/code/tm_replay/target/release/tm_replay.exe"
 ce_iso = "C:/Melee/Training-Mode-CE.iso"
 dolphin = "C:/path/to/Slippi Dolphin.exe"

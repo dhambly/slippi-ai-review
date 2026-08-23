@@ -15,6 +15,11 @@ interactive reports must work without a separate web build.
 
 ## melee-sim-light and slippi-ai
 
-These are external runtime checkouts and are not vendored. Their paths are
-supplied through the local configuration file. The compatibility patch under
-`patches/` is maintained by this project for replay ingestion.
+The Linux x86_64 MSL runtime wheels are vendored under `vendor/runtimes/` from
+the exact fork commits recorded in `dependencies.lock.json`. They contain the
+native simulator and the replay/Phillip analysis bridges, but no copyrighted
+game data. Bootstrap extracts that data locally from the user's ISO.
+
+Other platforms build those same commits into local `.runtime/` directories.
+`slippi-ai` is fetched at its locked public commit, with the compatibility patch
+under `patches/` applied during setup.
