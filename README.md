@@ -6,18 +6,18 @@ melee-sim-light, and publishes linked interactive reports for both phases.
 Selected advantage routes can also be exported to Training Mode Community
 Edition for hands-on practice.
 
-This repository contains the application plus checksum-pinned MSL runtime
-wheels for Linux x86_64 and macOS on Apple Silicon and Intel. Models, game
-images, replays, generated reports, upstream source checkouts, and extracted
-emulator data are not vendored.
+This repository contains the application, the checksum-pinned `gm-v2` model,
+and MSL runtime wheels for Linux x86_64 and macOS on Apple Silicon and Intel.
+Game images, replays, generated reports, upstream source checkouts, and
+extracted emulator data are not vendored.
 
 ## Distribution
 
-[`dependencies.lock.json`](dependencies.lock.json) pins the exact tested MSL
-and `slippi-ai` revisions. Supported Linux and macOS hosts install both MSL
-backends from the verified wheels already in this repository. Unsupported
-architectures can build the same pinned revisions automatically into
-`.runtime/`; users do not manage MSL checkouts.
+[`dependencies.lock.json`](dependencies.lock.json) pins the model checksum and
+the exact tested MSL and `slippi-ai` revisions. Supported Linux and macOS hosts
+install both MSL backends from the verified wheels already in this repository.
+Unsupported architectures can build the same pinned revisions automatically
+into `.runtime/`; users do not manage MSL checkouts.
 
 The automated native setup supports:
 
@@ -25,13 +25,13 @@ The automated native setup supports:
 - macOS 12+ on Apple Silicon or Intel with bundled runtimes
 - Python 3.12 and Node.js 20, installed locally by the bootstrap
 - CPU inference on both operating systems; Linux NVIDIA acceleration is optional
-- a Phillip-compatible model such as `gm-v2`
+- the bundled `gm-v2` model, with an optional `--model` override
 - a legally obtained NTSC Melee 1.02 ISO
 - Fox, Falco, Marth, Sheik, Captain Falcon, Ganondorf, Jigglypuff, Pikachu,
   Samus, Peach, and Yoshi replays
 
-Models, game images, replay uploads, generated reviews, and extracted game data
-are never vendored.
+Game images, replay uploads, generated reviews, and extracted game data are
+never committed.
 
 ## Linux And macOS
 
@@ -41,7 +41,6 @@ After installing `git` and `uv`:
 git clone <repository-url> slippi-ai-review
 cd slippi-ai-review
 sh ./scripts/bootstrap-posix.sh \
-  --model /absolute/path/to/gm-v2 \
   --iso /absolute/path/to/GALE01.iso
 source .venv/bin/activate
 slippi-review doctor

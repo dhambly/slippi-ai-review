@@ -2,6 +2,12 @@
   "schemaVersion": 2,
   "python": "3.12",
   "node": "20.19.4",
+  "modelBundle": {
+    "name": "gm-v2",
+    "path": "vendor/models/gm-v2",
+    "sha256": "094c2bc13f98ac6976d1e20f79a83a9bf3eff87de3a1b2155fe019200927b456",
+    "bytes": 95559733
+  },
   "runtimeBundles": {
     "linux-x86_64-cp312": {
       "legacy": {

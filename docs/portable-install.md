@@ -2,19 +2,19 @@
 
 The review stack is operated from this repository. `dependencies.lock.json`
 pins Phillip and both MSL backends to exact commits. Linux x86_64 and macOS
-clones already contain checksum-pinned MSL wheels under `vendor/runtimes/`, so
-setup does not need another MSL checkout or compiler. Bootstrap unpacks each
-backend into `.runtime/`, fetches Phillip at its pinned public commit, installs
-Node, extracts legal simulator data, writes the local configuration, and runs
-an import smoke test.
+clones already contain the checksum-pinned `gm-v2` model and MSL wheels, so
+setup does not need another model download, MSL checkout, or compiler.
+Bootstrap unpacks each backend into `.runtime/`, fetches Phillip at its pinned
+public commit, installs Node, extracts legal simulator data, writes the local
+configuration, and runs an import smoke test.
 
 Linux arm64 uses the same command and automatically builds the locked MSL
 revisions from source. Those managed source trees live under `.deps/` and do
 not require manual coordination.
 
-The model, ISO, uploaded replays, and generated reviews remain outside Git.
-The source fallback uses the private MSL fork. Authenticate Git before setup on
-Linux arm64, an unbundled host, or when explicitly passing `--from-source`:
+The ISO, uploaded replays, and generated reviews remain outside Git. The source
+fallback uses the private MSL fork. Authenticate Git before setup on Linux
+arm64, an unbundled host, or when explicitly passing `--from-source`:
 
 ```bash
 gh auth login
@@ -57,7 +57,6 @@ Clone or unpack the application, then bootstrap:
 git clone <slippi-ai-review-repository-url> slippi-ai-review
 cd slippi-ai-review
 sh ./scripts/bootstrap-posix.sh \
-  --model /absolute/path/to/gm-v2 \
   --iso /absolute/path/to/GALE01.iso
 source .venv/bin/activate
 slippi-review doctor
@@ -91,7 +90,6 @@ Clone or unpack the application, then bootstrap:
 git clone <slippi-ai-review-repository-url> slippi-ai-review
 cd slippi-ai-review
 sh ./scripts/bootstrap-posix.sh \
-  --model /absolute/path/to/gm-v2 \
   --iso /absolute/path/to/GALE01.iso
 source .venv/bin/activate
 slippi-review doctor
@@ -119,7 +117,6 @@ checkouts:
 
 ```bash
 sh ./scripts/bootstrap-posix.sh \
-  --model /absolute/path/to/gm-v2 \
   --iso /absolute/path/to/GALE01.iso
 ```
 
@@ -131,10 +128,8 @@ when a clean rebuild is intended. To audit the source path on any host, add
 To validate code packaging without private game assets:
 
 ```bash
-mkdir -p /tmp/empty-model
 touch /tmp/empty.iso
 sh ./scripts/bootstrap-posix.sh \
-  --model /tmp/empty-model \
   --iso /tmp/empty.iso \
   --skip-data \
   --dev
@@ -148,3 +143,17 @@ python scripts/build_source_bundle.py
 ```
 
 The archive is written to `dist/slippi-ai-review-source.tar.gz`.
+
+To make a complete local transfer containing your legally obtained ISO, use an
+uncompressed archive and keep it private:
+
+```bash
+python scripts/build_source_bundle.py \
+  --iso /absolute/path/to/GALE01.iso \
+  --out dist/slippi-ai-review-complete.tar
+```
+
+After extracting that archive, `local-assets/GALE01.iso` is detected
+automatically, so `sh ./scripts/bootstrap-posix.sh` needs no asset arguments.
+The ISO path is ignored by Git and must never be pushed or published. Pass
+`--model` only when deliberately overriding the bundled model.

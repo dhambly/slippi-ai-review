@@ -27,6 +27,13 @@ class BootstrapTests(unittest.TestCase):
                     actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
                     self.assertEqual(actual, specs[runtime]["sha256"])
 
+    def test_locked_model_matches_checksum_and_size(self) -> None:
+        lock = json.loads((ROOT / "dependencies.lock.json").read_text(encoding="utf-8"))
+        spec = lock["modelBundle"]
+        model = ROOT / spec["path"]
+        self.assertEqual(hashlib.sha256(model.read_bytes()).hexdigest(), spec["sha256"])
+        self.assertEqual(model.stat().st_size, spec["bytes"])
+
     def test_runtime_platform_key_normalizes_x86_64(self) -> None:
         with mock.patch.object(bootstrap.sys, "platform", "linux"), mock.patch.object(
             bootstrap.platform, "machine", return_value="AMD64"

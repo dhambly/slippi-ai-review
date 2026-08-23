@@ -47,6 +47,21 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def bundled_model(lock: dict[str, Any]) -> Path:
+    spec = lock["modelBundle"]
+    model = ROOT / str(spec["path"])
+    if not model.is_file():
+        raise SystemExit(f"Bundled model is missing: {model}")
+    actual_hash = sha256(model)
+    expected_hash = str(spec["sha256"])
+    if actual_hash != expected_hash:
+        raise SystemExit(f"Bundled model checksum mismatch: {actual_hash} != {expected_hash}")
+    if model.stat().st_size != int(spec["bytes"]):
+        raise SystemExit(f"Bundled model size mismatch: {model.stat().st_size} != {spec['bytes']}")
+    print(f"Model: using verified bundled {spec['name']}", flush=True)
+    return model
+
+
 def patch_status(checkout: Path, patch: Path) -> str:
     forward = subprocess.run(
         ["git", "apply", "--check", str(patch)],
@@ -338,7 +353,12 @@ def runtime_environment(root: Path) -> dict[str, str]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iso", type=Path, default=os.environ.get("SLIPPI_REVIEW_MELEE_ISO"))
-    parser.add_argument("--model", type=Path, default=os.environ.get("SLIPPI_REVIEW_MODEL"))
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=os.environ.get("SLIPPI_REVIEW_MODEL"),
+        help="Override the checksum-pinned model bundled with this repository.",
+    )
     parser.add_argument("--deps-dir", type=Path, default=ROOT / ".deps")
     parser.add_argument("--runtime-dir", type=Path, default=ROOT / ".runtime")
     parser.add_argument("--runtime-asset-dir", type=Path, help="Use matching local artifacts for packaging tests.")
@@ -356,18 +376,18 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     verify_host()
-    if args.model is None:
-        raise SystemExit("--model is required (or set SLIPPI_REVIEW_MODEL)")
-    if args.iso is None:
-        raise SystemExit("--iso is required (or set SLIPPI_REVIEW_MELEE_ISO)")
-    model = args.model.expanduser().resolve()
-    iso = args.iso.expanduser().resolve()
+    lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+    model = args.model.expanduser().resolve() if args.model else bundled_model(lock)
+    iso_value = args.iso or (ROOT / "local-assets" / "GALE01.iso")
+    iso = iso_value.expanduser().resolve()
     if not model.exists():
         raise SystemExit(f"Model not found: {model}")
     if not iso.is_file():
-        raise SystemExit(f"ISO not found: {iso}")
+        raise SystemExit(
+            f"ISO not found: {iso}. Pass --iso, set SLIPPI_REVIEW_MELEE_ISO, "
+            "or place a legally obtained NTSC 1.02 image at local-assets/GALE01.iso."
+        )
 
-    lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     source_specs = lock["sourceDependencies"]
     if args.msl_url:
         source_specs["msl-legacy"]["url"] = args.msl_url

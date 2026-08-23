@@ -15,11 +15,19 @@ interactive reports must work without a separate web build.
 
 ## melee-sim-light and slippi-ai
 
-The Linux x86_64 MSL runtime wheels are vendored under `vendor/runtimes/` from
-the exact fork commits recorded in `dependencies.lock.json`. They contain the
-native simulator and the replay/Phillip analysis bridges, but no copyrighted
-game data. Bootstrap extracts that data locally from the user's ISO.
+The Linux x86_64 and macOS MSL runtime wheels are vendored under
+`vendor/runtimes/` from the exact fork commits recorded in
+`dependencies.lock.json`. They contain the native simulator and the
+replay/Phillip analysis bridges, but no copyrighted game data. Bootstrap
+extracts that data locally from the user's ISO.
 
 Other platforms build those same commits into local `.runtime/` directories.
-`slippi-ai` is fetched at its locked public commit, with the compatibility patch
-under `patches/` applied during setup.
+`slippi-ai` is fetched at its locked public commit, with the compatibility
+patch under `patches/` applied during setup.
+
+## gm-v2 model
+
+The user-supplied Phillip `gm-v2` checkpoint is vendored under `vendor/models/`
+and checksum-pinned in `dependencies.lock.json`. Its redistribution provenance
+has not been established, so this private repository and any archive containing
+the model must not be made public until that is resolved.

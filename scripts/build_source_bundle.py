@@ -41,10 +41,16 @@ def included_files() -> list[Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=ROOT / "dist" / "slippi-ai-review-source.tar.gz")
+    parser.add_argument(
+        "--iso",
+        type=Path,
+        help="Add a local legal ISO as local-assets/GALE01.iso. Never use this for a public artifact.",
+    )
     args = parser.parse_args()
     output = args.out.expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(output, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+    mode = "w:gz" if output.name.endswith((".tar.gz", ".tgz")) else "w"
+    with tarfile.open(output, mode, format=tarfile.PAX_FORMAT) as archive:
         for source in included_files():
             archive_name = Path("slippi-ai-review") / source.relative_to(ROOT)
             info = archive.gettarinfo(str(source), arcname=str(archive_name))
@@ -52,6 +58,15 @@ def main() -> int:
                 info.mode = 0o755
             with source.open("rb") as handle:
                 archive.addfile(info, handle)
+        if args.iso:
+            iso = args.iso.expanduser().resolve()
+            if not iso.is_file():
+                raise SystemExit(f"ISO not found: {iso}")
+            archive.add(
+                iso,
+                arcname="slippi-ai-review/local-assets/GALE01.iso",
+                recursive=False,
+            )
     print(output)
     return 0
 

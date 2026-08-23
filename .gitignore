@@ -5,6 +5,7 @@ node_modules/
 /data/
 /dist/
 /build/
+/local-assets/
 *.egg-info/
 __pycache__/
 .pytest_cache/
