@@ -19,7 +19,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       LEGACY_COMMIT: dadf7f082cc1ae41d9f05ebd26e5c2bdb4ce6fd6
-      DECOMP_COMMIT: 265deb057c36d6ecdc3bc3fa2ee07e1b917b4fc3
+      DECOMP_COMMIT: 003c03d6a0fec63897bd4c7dac295a4e60600aed
       GIT_LFS_SKIP_SMUDGE: "1"
     steps:
       - uses: actions/checkout@v5
@@ -70,7 +70,7 @@ jobs:
       - name: Build native wheels
         run: |
           uv venv --python 3.12 --seed .venv
-          .venv/bin/python -m pip install --upgrade pip setuptools wheel numpy
+          .venv/bin/python -m pip install --upgrade pip setuptools wheel numpy peppi-py
           for runtime in legacy decomp; do
             mkdir -p "output/$runtime"
             .venv/bin/python -m pip wheel \
