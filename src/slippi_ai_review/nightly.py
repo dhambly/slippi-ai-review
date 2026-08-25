@@ -37,9 +37,37 @@ DEFAULT_ALIASES = ("moobs", "bes", "M#0085", "MOOB#964")
 GAME_NAME = re.compile(r"Game_(\d{8})T\d{6}\.slp$", re.IGNORECASE)
 
 
+def _as_pid(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _pid_running(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == 5
+        try:
+            exit_code = wintypes.DWORD()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))) and exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -51,41 +79,103 @@ def _pid_running(pid: int) -> bool:
     return True
 
 
+def _process_command_line(pid: int) -> str | None:
+    if not _pid_running(pid):
+        return None
+    if os.name == "nt":
+        command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
+        ]
+    elif (proc_path := Path(f"/proc/{pid}/cmdline")).is_file():
+        try:
+            return proc_path.read_bytes().replace(b"\0", b" ").decode(errors="replace").strip() or None
+        except OSError:
+            return None
+    else:
+        command = ["ps", "-p", str(pid), "-o", "command="]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
+def _pid_matches_review_pipeline(pid: int, review_dir: Path) -> bool:
+    if not _pid_running(pid):
+        return False
+    command_line = _process_command_line(pid)
+    if command_line is None:
+        return True
+    normalized = command_line.casefold()
+    pipeline_module = "slippi_ai_review.pipeline" in normalized
+    review_argument = str(review_dir.resolve()).casefold() in normalized
+    return pipeline_module and review_argument
+
+
 def _claim_active_run(nightly_dir: Path, run_id: str) -> None:
     """Prevent a scheduled and interactive nightly run from sharing the GPU."""
     nightly_dir.mkdir(parents=True, exist_ok=True)
     lock_path = nightly_dir / ".nightly.lock"
+    owner_path = lock_path / "owner.json"
     active_path = nightly_dir / "active_nightly.json"
-    for attempt in range(2):
+    for attempt in range(3):
         try:
-            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            lock_path.mkdir()
         except FileExistsError:
+            legacy_lock = lock_path.is_file()
+            metadata_path = lock_path if legacy_lock else owner_path
             try:
-                owner = _read_json(lock_path)
-            except (OSError, json.JSONDecodeError):
+                owner = _read_json(metadata_path)
+            except (OSError, ValueError):
                 owner = {}
-            if _pid_running(int(owner.get("pid") or 0)):
+            owner_pid = _as_pid(owner.get("pid"))
+            if _pid_running(owner_pid):
                 raise SystemExit(
-                    f"Nightly run {owner.get('runId') or 'unknown'} is already active (PID {owner.get('pid')})."
+                    f"Nightly run {owner.get('runId') or 'unknown'} is already active (PID {owner_pid})."
                 )
-            if attempt == 0:
-                lock_path.unlink(missing_ok=True)
+            try:
+                age_seconds = max(0.0, time.time() - lock_path.stat().st_mtime)
+            except OSError:
+                age_seconds = 0.0
+            if not owner and age_seconds < 30:
+                raise SystemExit(f"A nightly run is currently acquiring the lock: {lock_path}")
+            if attempt < 2:
+                if legacy_lock:
+                    lock_path.unlink(missing_ok=True)
+                else:
+                    owner_path.unlink(missing_ok=True)
+                    try:
+                        lock_path.rmdir()
+                    except FileNotFoundError:
+                        pass
                 continue
             raise SystemExit(f"Could not replace stale nightly lock: {lock_path}")
         else:
             owner = {"runId": run_id, "pid": os.getpid(), "startedAt": _utc_now()}
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump(owner, stream)
+            _write_json_atomic(owner_path, owner)
             _write_json_atomic(active_path, owner)
 
             def release() -> None:
-                for path in (lock_path, active_path):
+                try:
+                    current_owner = _read_json(owner_path)
+                except (OSError, ValueError):
+                    current_owner = {}
+                if current_owner.get("runId") == run_id and _as_pid(current_owner.get("pid")) == os.getpid():
+                    owner_path.unlink(missing_ok=True)
                     try:
-                        current = _read_json(path)
-                    except (OSError, json.JSONDecodeError):
-                        current = {}
-                    if current.get("runId") == run_id and int(current.get("pid") or 0) == os.getpid():
-                        path.unlink(missing_ok=True)
+                        lock_path.rmdir()
+                    except (FileNotFoundError, OSError):
+                        pass
+                try:
+                    current_active = _read_json(active_path)
+                except (OSError, ValueError):
+                    current_active = {}
+                if current_active.get("runId") == run_id and _as_pid(current_active.get("pid")) == os.getpid():
+                    active_path.unlink(missing_ok=True)
 
             atexit.register(release)
             return
@@ -162,6 +252,8 @@ def _review_payload(
     target: dict[str, Any],
     duplicates: list[dict[str, Any]],
     samples: int,
+    segments_per_game: int,
+    simulation_backend: str,
 ) -> dict[str, Any]:
     created_at = _utc_now()
     return {
@@ -184,6 +276,8 @@ def _review_payload(
             "qualityPreset": "quick",
             "analysisMode": "nightly-sweep",
             "phaseSweepSamples": samples,
+            "phaseSweepSegments": segments_per_game,
+            "simulationBackend": simulation_backend,
         },
         "artifacts": {
             "review": {"status": "pending"},
@@ -208,6 +302,8 @@ def create_review(
     details: dict[str, Any],
     target: dict[str, Any],
     samples: int,
+    segments_per_game: int,
+    simulation_backend: str,
 ) -> tuple[str, Path]:
     review_id = str(uuid.uuid4())
     review_dir = upload_dir / review_id
@@ -221,6 +317,8 @@ def create_review(
         target,
         _find_duplicates(upload_dir, digest),
         samples,
+        segments_per_game,
+        simulation_backend,
     )
     _write_json_atomic(review_dir / "review.json", payload)
     return review_id, review_dir
@@ -319,28 +417,112 @@ def _load_state(path: Path) -> dict[str, Any]:
     try:
         value = _read_json(path)
         return value if isinstance(value, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return {}
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected a JSON object in {path}")
+    return payload
 
 
-def _existing_review(upload_dir: Path, state: dict[str, Any], digest: str) -> tuple[str, Path] | None:
+def _review_compatible(
+    review: dict[str, Any],
+    review_dir: Path,
+    digest: str,
+    target: dict[str, Any],
+    *,
+    samples: int,
+    segments_per_game: int,
+    simulation_backend: str,
+) -> bool:
+    settings = review.get("settings") if isinstance(review.get("settings"), dict) else {}
+    replay = review.get("replay") if isinstance(review.get("replay"), dict) else {}
+    saved_target = review.get("targetPlayer") if isinstance(review.get("targetPlayer"), dict) else {}
+    if settings.get("analysisMode") != "nightly-sweep":
+        return False
+    if replay.get("sha256") != digest:
+        return False
+    try:
+        saved_port = int(saved_target.get("port") or 0)
+        target_port = int(target.get("port") or 0)
+    except (TypeError, ValueError):
+        return False
+    if saved_port != target_port:
+        return False
+    numeric_requirements = {
+        "phaseSweepSamples": samples,
+        "phaseSweepSegments": segments_per_game,
+    }
+    for key, requested in numeric_requirements.items():
+        configured = settings.get(key)
+        if configured is not None:
+            try:
+                if int(configured) < requested:
+                    return False
+            except (TypeError, ValueError):
+                return False
+    configured_backend = settings.get("simulationBackend")
+    if configured_backend is not None and configured_backend != simulation_backend:
+        return False
+    queue_path = review_dir / "pipeline" / "phase_sweep_queue.json"
+    if queue_path.is_file():
+        try:
+            queue = _read_json(queue_path)
+        except (OSError, ValueError):
+            return False
+        try:
+            queue_port = int(queue.get("controlled_port") or 0)
+        except (TypeError, ValueError):
+            return False
+        if queue_port != target_port:
+            return False
+    return (review_dir / "replay.slp").is_file()
+
+
+def _existing_review(
+    upload_dir: Path,
+    state: dict[str, Any],
+    digest: str,
+    target: dict[str, Any],
+    *,
+    samples: int,
+    segments_per_game: int,
+    simulation_backend: str,
+) -> tuple[str, Path, str] | None:
     record = (state.get("replays") or {}).get(digest) or {}
-    review_id = str(record.get("reviewId") or "")
-    if review_id:
+    candidate_ids = [str(record.get("reviewId") or "")]
+    candidate_ids.extend(str(item.get("reviewId") or "") for item in _find_duplicates(upload_dir, digest))
+    seen: set[str] = set()
+    for review_id in candidate_ids:
+        if not review_id or review_id in seen:
+            continue
+        seen.add(review_id)
         review_dir = upload_dir / review_id
         review = _load_review(upload_dir, review_id)
-        if review and review.get("status") == "complete" and (review_dir / "pipeline" / "phase_sweep_queue.json").is_file():
-            return review_id, review_dir
-    for duplicate in _find_duplicates(upload_dir, digest):
-        review_id = str(duplicate.get("reviewId") or "")
-        review_dir = upload_dir / review_id
-        review = _load_review(upload_dir, review_id)
-        if review and review.get("status") == "complete" and (review_dir / "pipeline" / "phase_sweep_queue.json").is_file():
-            return review_id, review_dir
+        if not review or not _review_compatible(
+            review,
+            review_dir,
+            digest,
+            target,
+            samples=samples,
+            segments_per_game=segments_per_game,
+            simulation_backend=simulation_backend,
+        ):
+            continue
+        status = str(review.get("status") or "")
+        reports = [review_dir / "artifacts" / f"{phase}_review.html" for phase in ("advantage", "neutral", "disadvantage")]
+        queue_path = review_dir / "pipeline" / "phase_sweep_queue.json"
+        if status == "complete" and queue_path.is_file() and all(path.is_file() for path in reports):
+            return review_id, review_dir, "complete"
+        if status in {"queued", "failed", "processing"}:
+            worker = review.get("worker") if isinstance(review.get("worker"), dict) else {}
+            pipeline_pid = _as_pid(worker.get("pipelinePid"))
+            if status == "processing" and _pid_matches_review_pipeline(pipeline_pid, review_dir):
+                continue
+            return review_id, review_dir, "resume"
     return None
 
 
@@ -436,7 +618,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        uuid.UUID(args.run_id)
+        args.run_id = str(uuid.UUID(args.run_id))
     except ValueError as exc:
         raise SystemExit("--run-id must be a UUID") from exc
     if args.samples < 4 or args.max_hours <= 0 or not 0 < args.gpu_duty_cycle <= 1:
@@ -490,9 +672,17 @@ def main() -> int:
                     games.append(_session_game(source, details, target, review_id=None, status="skipped", reason=f"short game ({last_frame} frames)"))
                     continue
                 digest = _sha256(source)
-                existing = None if args.force else _existing_review(args.upload_dir, state, digest)
-                if existing:
-                    review_id, review_dir = existing
+                existing = None if args.force else _existing_review(
+                    args.upload_dir,
+                    state,
+                    digest,
+                    target,
+                    samples=args.samples,
+                    segments_per_game=args.segments_per_game,
+                    simulation_backend=args.simulation_backend,
+                )
+                if existing and existing[2] == "complete":
+                    review_id, review_dir, _mode = existing
                     completed_dirs.append(review_dir)
                     games.append(_session_game(source, details, target, review_id=review_id, status="reused"))
                     stream.write(f"[{number}/{len(replays)}] reused {source.name} as {review_id}\n")
@@ -501,8 +691,21 @@ def main() -> int:
                     games.append(_session_game(source, details, target, review_id=None, status="validated"))
                     stream.write(f"[{number}/{len(replays)}] validated {source.name}, P{target.get('port')}\n")
                     continue
-                review_id, review_dir = create_review(args.upload_dir, source, digest, details, target, args.samples)
-                stream.write(f"[{number}/{len(replays)}] processing {source.name} as {review_id}\n")
+                if existing:
+                    review_id, review_dir, _mode = existing
+                    stream.write(f"[{number}/{len(replays)}] resuming {source.name} as {review_id}\n")
+                else:
+                    review_id, review_dir = create_review(
+                        args.upload_dir,
+                        source,
+                        digest,
+                        details,
+                        target,
+                        args.samples,
+                        args.segments_per_game,
+                        args.simulation_backend,
+                    )
+                    stream.write(f"[{number}/{len(replays)}] processing {source.name} as {review_id}\n")
                 stream.flush()
                 ok, seconds, error = run_review(args, review_id, review_dir, details, target, deadline)
                 status = "complete" if ok else "failed"

@@ -275,15 +275,17 @@ class UploadEndpointTests(unittest.TestCase):
     def test_dashboard_lists_and_serves_nightly_reports(self) -> None:
         older_id = str(server_module.uuid.uuid4())
         nightly_id = str(server_module.uuid.uuid4())
+        hidden_id = str(server_module.uuid.uuid4())
         nightly_root = self.uploads.parent / "nightly"
-        for report_id, created_at, title in (
-            (older_id, "2026-08-23T08:00:00Z", "Earlier session"),
-            (nightly_id, "2026-08-25T08:00:00Z", "Tonight's review"),
+        for report_id, created_at, title, hidden in (
+            (older_id, "2026-08-23T08:00:00Z", "Earlier session", False),
+            (nightly_id, "2026-08-25T08:00:00Z", "Tonight's review", False),
+            (hidden_id, "2026-08-26T08:00:00Z", "Internal benchmark", True),
         ):
             report_dir = nightly_root / report_id
             report_dir.mkdir(parents=True)
             (report_dir / "nightly.json").write_text(
-                json.dumps({"title": title, "createdAt": created_at, "gamesAnalyzed": 12}),
+                json.dumps({"title": title, "createdAt": created_at, "gamesAnalyzed": 12, "hidden": hidden}),
                 encoding="utf-8",
             )
             (report_dir / "report.html").write_text(f"<h1>{title}</h1>", encoding="utf-8")

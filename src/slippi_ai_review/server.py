@@ -446,7 +446,7 @@ def _list_nightly_reports(nightly_dir: Path) -> list[dict[str, object]]:
         if not child.is_dir() or _review_id(child.name) is None:
             continue
         payload = _load_nightly_report(nightly_dir, child.name)
-        if payload is not None:
+        if payload is not None and not payload.get("hidden"):
             reports.append(payload)
     reports.sort(
         key=lambda item: str(item.get("completedAt") or item.get("createdAt") or item.get("updatedAt") or ""),

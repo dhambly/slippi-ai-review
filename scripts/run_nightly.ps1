@@ -17,10 +17,25 @@ $activePath = Join-Path $logDir "active_nightly.json"
 if (Test-Path $activePath) {
     try {
         $active = Get-Content $activePath -Raw | ConvertFrom-Json
-        if ($active.pid -and (Get-Process -Id $active.pid -ErrorAction SilentlyContinue)) {
-            "[$(Get-Date -Format o)] skipped: nightly run $($active.runId) is already active (PID $($active.pid))" |
-                Add-Content -Path $logPath
-            exit 0
+        if ($active.pid) {
+            $process = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$active.pid)" -ErrorAction SilentlyContinue
+            $commandLine = [string]$process.CommandLine
+            $nightlyCommandPattern = "(?i)$([regex]::Escape($entryPoint))`"?\s+nightly(?:\s|$)"
+            $nightlyModulePattern = "(?i)-m\s+slippi_ai_review\.cli\s+nightly(?:\s|$)"
+
+            if ($process -and ($commandLine -match $nightlyCommandPattern -or $commandLine -match $nightlyModulePattern)) {
+                "[$(Get-Date -Format o)] skipped: nightly run $($active.runId) is already active (PID $($active.pid))" |
+                    Add-Content -Path $logPath
+                exit 0
+            }
+
+            if ($process) {
+                "[$(Get-Date -Format o)] ignored stale active-run metadata: PID $($active.pid) belongs to an unrelated process" |
+                    Add-Content -Path $logPath
+            } else {
+                "[$(Get-Date -Format o)] ignored stale active-run metadata: PID $($active.pid) is no longer running" |
+                    Add-Content -Path $logPath
+            }
         }
     } catch {
         "[$(Get-Date -Format o)] ignored unreadable active-run metadata: $($_.Exception.Message)" |
