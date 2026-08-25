@@ -63,26 +63,26 @@ def evidence(review_id: str, phase: str = "neutral") -> Evidence:
 
 
 def test_patterns_require_more_than_one_game_for_practice_priority() -> None:
-    key = "neutral|Fox vs Marth|nair"
+    key = "neutral|Fox vs Marth|aerial commitment"
     recurring, watchlist = build_patterns([
         (key, evidence("00000000-0000-4000-8000-000000000001")),
         (key, evidence("00000000-0000-4000-8000-000000000002")),
     ])
     assert len(recurring) == 1
-    assert recurring[0].title == "Getting opened after nair"
+    assert recurring[0].title == "Getting opened during aerial commitments"
     assert not watchlist
 
 
 def test_report_contains_practice_controls_and_plain_language() -> None:
     pattern, _watchlist = build_patterns([
-        ("neutral|Fox vs Marth|nair", evidence("00000000-0000-4000-8000-000000000001")),
-        ("neutral|Fox vs Marth|nair", evidence("00000000-0000-4000-8000-000000000002")),
+        ("neutral|Fox vs Marth|aerial commitment", evidence("00000000-0000-4000-8000-000000000001")),
+        ("neutral|Fox vs Marth|aerial commitment", evidence("00000000-0000-4000-8000-000000000002")),
     ])
     page = build_html({
         "session": {"date": "2026-08-24", "stats": {"analyzedGames": 2}, "games": []},
         "evidenceCount": 2,
         "recurringPatterns": [pattern[0].__dict__ | {"evidence": [item.__dict__ for item in pattern[0].evidence]}],
     })
-    assert "Getting opened after nair" in page
+    assert "Getting opened during aerial commitments" in page
     assert "Practice this in TMCE" in page
     assert "Repeated patterns only" in page

@@ -111,6 +111,29 @@ def _move_label(value: Any, character: str = "") -> str:
     return move or "no clear commitment"
 
 
+def _action_group(action: str) -> str:
+    value = action.split(" (", 1)[0]
+    if value in {"nair", "fair", "bair", "uair", "dair", "aerial landing"}:
+        return "aerial commitment"
+    if value in {"grab", "dash grab"} or "throw" in value:
+        return "grab commitment"
+    if value in {"shield timing", "spotdodge", "airdodge"} or "roll" in value or "tech" in value:
+        return "defensive timing"
+    if value in {"dash movement", "jump", "movement", "fall"}:
+        return "movement"
+    return "grounded attack commitment"
+
+
+def _opener_group(action: str) -> str:
+    if action in {"nair", "fair", "bair", "uair", "dair"}:
+        return "aerial hit"
+    if "throw" in action or action in {"grab", "pummel"}:
+        return "grab or throw"
+    if action in {"shine", "side b", "up b", "neutral b"}:
+        return "special move"
+    return "grounded hit"
+
+
 def _segment_result(segment: dict[str, Any]) -> tuple[float, int, bool]:
     text = f"{segment.get('title') or ''} {segment.get('label') or ''}"
     damages = re.findall(r"\+(\d+(?:\.\d+)?)%", text)
@@ -267,7 +290,7 @@ def collect_review_evidence(review_dir: Path) -> list[tuple[str, Evidence]]:
             improvement = original_damage - model_taken + model_dealt * 0.25
             if not original_kill and improvement < 6.0:
                 continue
-            key = f"disadvantage|{matchup}|{opponent_action}"
+            key = f"disadvantage|{matchup}|{_opener_group(opponent_action)}"
             original_result = "lost the stock" if original_kill else f"took {original_damage:.0f}%"
             phillip_result = f"took {model_taken:.0f}% and dealt {model_dealt:.0f}%"
             replay_action = "defense after hit"
@@ -280,7 +303,7 @@ def collect_review_evidence(review_dir: Path) -> list[tuple[str, Evidence]]:
             improvement = original_damage - model_taken + model_dealt * 0.35
             if improvement < 4.0 or float(option.get("meanScore") or 0.0) <= 0:
                 continue
-            key = f"neutral|{matchup}|{replay_action}"
+            key = f"neutral|{matchup}|{_action_group(replay_action)}"
             original_result = ("lost the stock" if original_kill else f"got opened by {opponent_action} for {original_damage:.0f}%")
             phillip_result = f"chose {phillip_action}, dealt {model_dealt:.0f}% and took {model_taken:.0f}%"
 
@@ -322,14 +345,19 @@ def _pattern_copy(phase: str, action: str, items: list[Evidence]) -> tuple[str, 
         opponent_actions[item.opponent_action] += 1
     phillip = max(phillip_actions, key=phillip_actions.get)
     opponent = max(opponent_actions, key=opponent_actions.get)
+    replay_actions = defaultdict(int)
+    for item in items:
+        replay_actions[item.replay_action.split(" (", 1)[0]] += 1
+    replay_examples = sorted(replay_actions, key=lambda value: (-replay_actions[value], value))[:2]
+    replay_example = " and ".join(replay_examples)
     if phase == "neutral":
-        title = f"Getting opened after {action}"
+        title = f"Getting opened during {action}s"
         summary = (
-            f"This showed up {len(items)} times: the replay committed to {action}, most often got caught by {opponent}, "
+            f"This showed up {len(items)} times after {replay_example}: the replay most often got caught by {opponent}, "
             f"while Phillip's stable branches most often began with {phillip}."
         )
         drill = (
-            f"Recreate the listed spacing and alternate {action} with {phillip}. Stop each rep at the first clean hit; "
+            f"Recreate the listed spacing and alternate the recorded {replay_example} timing with {phillip}. Stop each rep at the first clean hit; "
             "do 10 reps on each side before increasing speed."
         )
     elif phase == "advantage":
@@ -343,13 +371,14 @@ def _pattern_copy(phase: str, action: str, items: list[Evidence]) -> tuple[str, 
             "Count 10 completed routes, not 10 attempts."
         )
     else:
-        title = f"Taking extra damage after {action}"
+        article = "an" if action.startswith("aerial") else "a"
+        title = f"Taking extra damage after {article} {action}"
         summary = (
-            f"After {action}, the replay repeatedly took more damage or lost the stock while Phillip's lower-risk branches "
+            f"After {opponent}, the replay repeatedly took more damage or lost the stock while Phillip's lower-risk branches "
             f"most often used {phillip}."
         )
         drill = (
-            f"Start in hitstun after {action} and test {phillip} against the recorded pressure. Reset only after stable neutral, ledge, "
+            f"Start in hitstun after the listed {opponent} hit and test {phillip} against the recorded pressure. Reset only after stable neutral, ledge, "
             "or a stock loss; complete 10 escapes per side."
         )
     return title, summary, drill
