@@ -4,10 +4,13 @@
   const count = document.querySelector("#review-count");
   const worker = document.querySelector("#worker-state");
   const storage = document.querySelector("#storage-state");
+  const nightlyList = document.querySelector("#nightly-list");
+  const nightlyCount = document.querySelector("#nightly-count");
   const search = document.querySelector("#review-search");
   const statusFilter = document.querySelector("#status-filter");
   const ageFilter = document.querySelector("#age-filter");
   let reviews = [];
+  let nightlyReports = [];
   const fmtBytes = (n) => n < 1024 ** 2 ? `${Math.round(n / 1024)} KB` : n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(2)} GB`;
   const fmtTime = (seconds) => seconds < 90 ? `${Math.round(seconds)} sec` : seconds < 5400 ? `${Math.round(seconds / 60)} min` : `${(seconds / 3600).toFixed(1)} hr`;
   function playerLabel(p) { const color = p.character?.colorName ? ` (${p.character.colorName})` : ""; const ids = [...new Set([p.displayName, p.nametag, p.connectCode].filter(Boolean))]; return `P${p.port} ${p.character?.name || "Unknown"}${color}${ids.length ? ` · ${ids.join(" · ")}` : ""}`; }
@@ -52,6 +55,31 @@
       list.append(row);
     }
   }
+  function renderNightly() {
+    nightlyList.replaceChildren();
+    nightlyCount.textContent = `${nightlyReports.length} total`;
+    if (!nightlyReports.length) { nightlyList.innerHTML = '<div class="empty">No nightly reports yet.</div>'; return; }
+    for (const report of nightlyReports) {
+      const row = document.createElement("article"); row.className = "nightly-row";
+      const gameCount = report.stats?.analyzedGames ?? report.gamesAnalyzed ?? report.reviewCount ?? report.gameCount;
+      const detail = [gameCount == null ? null : `${gameCount} games`, report.summary].filter(Boolean).join(" | ");
+      const createdAt = report.completedAt || report.createdAt || report.updatedAt;
+      row.innerHTML = '<div><strong></strong><span></span></div><span class="created"></span><div class="actions"><a>Open report</a></div>';
+      row.querySelector("strong").textContent = report.title || "Nightly Slippi report";
+      row.querySelector("div > span").textContent = detail || "Cross-game analysis";
+      row.querySelector(".created").textContent = createdAt ? new Date(createdAt).toLocaleString() : "";
+      const link = row.querySelector("a"); link.href = report.urls.report; link.setAttribute("aria-label", `Open ${row.querySelector("strong").textContent}`);
+      if (!report.reportReady) { link.textContent = "Processing"; link.removeAttribute("href"); }
+      nightlyList.append(row);
+    }
+  }
+  async function refreshNightly() {
+    try {
+      const response = await fetch("/api/nightly", { cache: "no-store" });
+      if (!response.ok) throw new Error("nightly request failed");
+      const body = await response.json(); nightlyReports = body.reports || []; renderNightly();
+    } catch (_) { nightlyList.innerHTML = '<div class="empty">Could not load nightly reports.</div>'; nightlyCount.textContent = ""; }
+  }
   async function refresh() {
     try {
       const response = await fetch("/api/reviews", { cache: "no-store" }); const body = await response.json(); reviews = body.reviews || [];
@@ -66,5 +94,5 @@
   });
   search.addEventListener("input", render); statusFilter.addEventListener("change", render); ageFilter.addEventListener("change", render);
   SlpUploadPanel.mount(document.querySelector("#slp-upload-mount"), { onAccepted: refresh, onValidated: refresh });
-  refresh(); setInterval(refresh, 5000);
+  refresh(); refreshNightly(); setInterval(refresh, 5000); setInterval(refreshNightly, 30000);
 })();

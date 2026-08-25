@@ -272,6 +272,72 @@ class UploadEndpointTests(unittest.TestCase):
         reviews = json.loads(body)["reviews"]
         self.assertEqual(reviews[0]["reviewId"], payload["review"]["reviewId"])
 
+    def test_dashboard_lists_and_serves_nightly_reports(self) -> None:
+        older_id = str(server_module.uuid.uuid4())
+        nightly_id = str(server_module.uuid.uuid4())
+        nightly_root = self.uploads.parent / "nightly"
+        for report_id, created_at, title in (
+            (older_id, "2026-08-23T08:00:00Z", "Earlier session"),
+            (nightly_id, "2026-08-25T08:00:00Z", "Tonight's review"),
+        ):
+            report_dir = nightly_root / report_id
+            report_dir.mkdir(parents=True)
+            (report_dir / "nightly.json").write_text(
+                json.dumps({"title": title, "createdAt": created_at, "gamesAnalyzed": 12}),
+                encoding="utf-8",
+            )
+            (report_dir / "report.html").write_text(f"<h1>{title}</h1>", encoding="utf-8")
+
+        dashboard_status, _, dashboard = self.get("/")
+        self.assertEqual(dashboard_status, 200)
+        self.assertIn('id="nightly-list"', dashboard)
+        self.assertIn('id="nightly-count"', dashboard)
+        script_status, script_type, script = self.get("/advantage-review-static/advantage_review_dashboard.js")
+        self.assertEqual(script_status, 200)
+        self.assertIn("javascript", script_type)
+        self.assertIn('fetch("/api/nightly"', script)
+        self.assertIn("link.href = report.urls.report", script)
+
+        api_status, content_type, body = self.get("/api/nightly")
+        self.assertEqual(api_status, 200)
+        self.assertIn("application/json", content_type)
+        reports = json.loads(body)["reports"]
+        self.assertEqual([item["nightlyId"] for item in reports], [nightly_id, older_id])
+        self.assertEqual(reports[0]["urls"]["nightly"], f"/nightly/{nightly_id}/")
+        self.assertEqual(reports[0]["urls"]["report"], f"/nightly/{nightly_id}/report")
+        self.assertTrue(reports[0]["reportReady"])
+
+        for path in (f"/nightly/{nightly_id}/", f"/nightly/{nightly_id}/report"):
+            report_status, report_type, report_body = self.get(path)
+            self.assertEqual(report_status, 200)
+            self.assertIn("text/html", report_type)
+            self.assertEqual(report_body, "<h1>Tonight's review</h1>")
+
+    def test_nightly_routes_reject_missing_invalid_and_corrupt_resources(self) -> None:
+        nightly_root = self.uploads.parent / "nightly"
+        corrupt_id = str(server_module.uuid.uuid4())
+        corrupt_dir = nightly_root / corrupt_id
+        corrupt_dir.mkdir(parents=True)
+        (corrupt_dir / "nightly.json").write_text("not json", encoding="utf-8")
+        missing_report_id = str(server_module.uuid.uuid4())
+        missing_dir = nightly_root / missing_report_id
+        missing_dir.mkdir()
+        (missing_dir / "nightly.json").write_text("{}", encoding="utf-8")
+
+        api_status, _, body = self.get("/api/nightly")
+        self.assertEqual(api_status, 200)
+        reports = json.loads(body)["reports"]
+        self.assertEqual([item["nightlyId"] for item in reports], [missing_report_id])
+        self.assertFalse(reports[0]["reportReady"])
+        for path in (
+            f"/nightly/{corrupt_id}/report",
+            f"/nightly/{missing_report_id}/report",
+            "/nightly/not-a-uuid/report",
+            "/nightly/../../server.py/report",
+        ):
+            status, _, _ = self.get(path)
+            self.assertEqual(status, 404)
+
     def test_training_mode_endpoint_launches_selected_route_only_after_completion(self) -> None:
         _, payload = self.request(b"valid replay")
         review_id = payload["review"]["reviewId"]

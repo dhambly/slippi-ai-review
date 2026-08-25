@@ -20,6 +20,7 @@ COMMANDS = {
     "doctor": "operations",
     "cleanup": "operations",
     "startup": "operations",
+    "nightly": "nightly",
 }
 
 

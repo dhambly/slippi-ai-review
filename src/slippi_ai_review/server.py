@@ -413,6 +413,48 @@ def _list_reviews(upload_dir: Path) -> list[dict[str, object]]:
     return reviews
 
 
+def _load_nightly_report(nightly_dir: Path, nightly_id: str) -> dict[str, object] | None:
+    validated = _review_id(nightly_id)
+    if validated is None:
+        return None
+    metadata_path = safe_file(nightly_dir / validated, "nightly.json")
+    report_path = safe_file(nightly_dir / validated, "report.html")
+    if metadata_path is None or report_path is None:
+        return None
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    urls = payload.get("urls") if isinstance(payload.get("urls"), dict) else {}
+    payload["nightlyId"] = validated
+    payload["reportReady"] = report_path.is_file()
+    payload["urls"] = {
+        **urls,
+        "nightly": f"/nightly/{validated}/",
+        "report": f"/nightly/{validated}/report",
+    }
+    return payload
+
+
+def _list_nightly_reports(nightly_dir: Path) -> list[dict[str, object]]:
+    if not nightly_dir.is_dir():
+        return []
+    reports = []
+    for child in nightly_dir.iterdir():
+        if not child.is_dir() or _review_id(child.name) is None:
+            continue
+        payload = _load_nightly_report(nightly_dir, child.name)
+        if payload is not None:
+            reports.append(payload)
+    reports.sort(
+        key=lambda item: str(item.get("completedAt") or item.get("createdAt") or item.get("updatedAt") or ""),
+        reverse=True,
+    )
+    return reports
+
+
 def _directory_size(path: Path) -> int:
     total = 0
     if not path.exists():
@@ -651,12 +693,14 @@ h2{{margin:0;font-size:16px}}.section-copy{{margin:4px 0 0;color:var(--muted);fo
 .slp-upload-panel__status,.slp-upload-panel__target{{grid-column:1/-1}}.slp-upload-panel__status{{min-height:20px;color:var(--muted);font-size:12px}}.slp-upload-panel__status[data-state="validated"]{{color:var(--amber)}}.slp-upload-panel__status[data-state="accepted"]{{color:var(--green)}}.slp-upload-panel__status[data-state="error"]{{color:var(--red)}}
 .slp-upload-panel__target{{display:flex;flex-wrap:wrap;gap:8px}}.slp-upload-panel__target button{{min-height:36px;padding:7px 10px;border:1px solid #477b60;border-radius:4px;color:var(--ink);background:var(--raised);font-weight:700;cursor:pointer}}.slp-upload-panel__review-link{{display:inline-block;margin-top:4px;font-weight:700}}
 .reviews-head{{display:flex;align-items:end;justify-content:space-between;gap:16px;margin-top:28px;padding-bottom:10px}}.reviews-meta,.review-tools{{display:flex;align-items:center;gap:9px;flex-wrap:wrap}}.review-tools{{margin-bottom:10px}}.review-tools input,.review-tools select,.review-tools button{{min-height:36px;padding:7px 9px;border:1px solid #566059;border-radius:4px;color:var(--ink);background:var(--raised)}}.review-tools button{{cursor:pointer;font-weight:700}}.review-tools input{{min-width:260px}}.count,#storage-state{{color:var(--muted);font-size:12px}}.worker-state{{padding:4px 7px;border:1px solid #566059;border-radius:4px;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}}.worker-state[data-online="true"]{{color:var(--green)}}
-.review-list{{border-top:1px solid var(--line)}}.review-row{{display:grid;grid-template-columns:minmax(180px,1.4fr) 150px minmax(170px,1fr) auto;gap:14px;align-items:center;padding:13px 8px;border-bottom:1px solid var(--line)}}
+.review-list,.nightly-list{{border-top:1px solid var(--line)}}.review-row,.nightly-row{{display:grid;grid-template-columns:minmax(180px,1.4fr) 150px minmax(170px,1fr) auto;gap:14px;align-items:center;padding:13px 8px;border-bottom:1px solid var(--line)}}
+.nightly-row{{grid-template-columns:minmax(220px,1.4fr) minmax(150px,1fr) auto}}.nightly-row strong,.nightly-row span{{display:block}}.nightly-row span{{color:var(--muted);font-size:11px}}
 .matchup strong,.matchup span,.matchup small{{display:block}}.matchup span,.matchup small,.created{{color:var(--muted);font-size:11px}}.state{{justify-self:start;padding:4px 7px;border:1px solid #566059;border-radius:4px;font-size:10px;font-weight:800;text-transform:uppercase}}.state[data-state="queued"],.state[data-state="processing"]{{color:var(--amber)}}.state[data-state="complete"]{{color:var(--green)}}.state[data-state="failed"],.state[data-state="cancelled"]{{color:var(--red)}}
 .actions{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}}.actions a,.actions button{{min-height:32px;padding:6px 9px;border:1px solid #566059;border-radius:4px;color:var(--ink);background:var(--raised);font-size:11px;font-weight:700;text-decoration:none;cursor:pointer}}.empty{{padding:24px 8px;color:var(--muted)}}
-@media(max-width:700px){{header{{padding:11px 14px}}.upload-band{{grid-template-columns:1fr;gap:12px}}.slp-upload-panel{{grid-template-columns:1fr}}.slp-upload-panel__submit{{grid-column:1}}.review-row{{grid-template-columns:1fr auto}}.created{{display:none}}.actions{{grid-column:1/-1}}}}
+@media(max-width:700px){{header{{padding:11px 14px}}.upload-band{{grid-template-columns:1fr;gap:12px}}.slp-upload-panel{{grid-template-columns:1fr}}.slp-upload-panel__submit{{grid-column:1}}.review-row,.nightly-row{{grid-template-columns:1fr auto}}.created{{display:none}}.actions{{grid-column:1/-1}}}}
 </style></head><body><header><div><h1>Slippi analysis</h1><p>Replay review queue</p></div>{example_link}</header><main>
 <section class="upload-band"><div><h2>New analysis</h2><p class="section-copy">Upload, choose a player, then track processing by review ID.</p></div><div id="slp-upload-mount"></div></section>
+<section><div class="reviews-head"><div><h2>Nightly Reports</h2><p class="section-copy">Cross-game findings and recurring practice priorities.</p></div><span class="count" id="nightly-count"></span></div><div class="nightly-list" id="nightly-list"><div class="empty">Loading nightly reports...</div></div></section>
 <section><div class="reviews-head"><div><h2>Reviews</h2><p class="section-copy">Each review has a permanent UUID link.</p></div><div class="reviews-meta"><span class="worker-state" id="worker-state">Worker...</span><span id="storage-state"></span><span class="count" id="review-count"></span></div></div><div class="review-tools"><input id="review-search" type="search" placeholder="Search player, character, or replay"><select id="status-filter"><option value="all">All statuses</option><option value="awaiting_target">Needs player</option><option value="queued">Queued</option><option value="processing">Processing</option><option value="complete">Complete</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option><option value="archived">Archived</option></select><select id="age-filter"><option value="all">Any date</option><option value="1">Today</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option></select><button id="cleanup-storage" type="button">Cleanup storage</button></div><div class="review-list" id="review-list"><div class="empty">Loading reviews...</div></div></section>
 </main><script src="/advantage-review-static/slp_upload_panel.js"></script><script type="text/plain">
 const list=document.querySelector('#review-list');const count=document.querySelector('#review-count');const workerState=document.querySelector('#worker-state');
@@ -842,6 +886,7 @@ def make_handler(
     root = root.resolve()
     msl_static = msl_static.resolve()
     upload_dir = upload_dir.resolve()
+    nightly_dir = (upload_dir.parent / "nightly").resolve()
 
     class Handler(SimpleHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -879,6 +924,27 @@ def make_handler(
                     "storage": storage,
                     "qualityPresets": QUALITY_PRESETS,
                 })
+                return
+            if pathname == "/api/nightly":
+                self._send_json(200, {"ok": True, "reports": _list_nightly_reports(nightly_dir)})
+                return
+            nightly_match = re.fullmatch(r"/nightly/([0-9a-f-]+)(?:/|/report)", pathname)
+            if nightly_match:
+                nightly_id = _review_id(nightly_match.group(1))
+                report_path = safe_file(nightly_dir / nightly_id, "report.html") if nightly_id else None
+                if report_path is None or not report_path.is_file():
+                    self.send_error(404, "Nightly report not found")
+                    return
+                try:
+                    body = report_path.read_bytes()
+                except OSError:
+                    self.send_error(404, "Nightly report not found")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
                 return
             log_match = re.fullmatch(r"/api/reviews/([0-9a-f-]+)/log", pathname)
             if log_match:

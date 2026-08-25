@@ -341,6 +341,55 @@ def publish_phase_sweep_artifacts(source: Path, destination: Path) -> None:
                 shutil.copy2(item, destination_folder / item.name)
 
 
+def build_phase_sweep_artifacts(
+    args: argparse.Namespace,
+    *,
+    inventory: Path,
+    run_dir: Path,
+    queue: Path,
+    artifact_root: Path,
+    logs: Path,
+    timings: dict[str, float],
+) -> Path:
+    """Select and package the reusable whole-game sweep artifacts."""
+    final = artifact_root / "final_artifacts"
+    if args.force or not queue.is_file():
+        timings["phase_sweep_selection"] = run_stage("phase_sweep_selection", module_command(
+            "phase_sweep_selection",
+            "--inventory", str(inventory),
+            "--run-dir", str(run_dir),
+            "--out", str(queue),
+        ), logs / "phase_sweep_selection.log")
+    else:
+        emit("phase_sweep_selection", "Reusing phase sweep selection.")
+    set_queue_metadata(
+        queue,
+        display_name=args.display_name,
+        slp_version=args.slp_version,
+        backend=args.simulation_backend,
+    )
+    if args.force or not (final / "advantage_improvements.json").is_file():
+        timings["phase_sweep_artifacts"] = run_stage("phase_sweep_artifacts", module_command(
+            "artifacts",
+            "--queue-json", str(queue),
+            "--out-root", str(artifact_root),
+            "--workers", str(args.render_workers),
+        ), logs / "phase_sweep_artifacts.log")
+    else:
+        emit("phase_sweep_artifacts", "Reusing phase sweep traces.")
+    reports = tuple(final / f"{phase}_review.html" for phase in ("advantage", "neutral", "disadvantage"))
+    if args.force or any(not report.is_file() for report in reports):
+        timings["phase_sweep_report"] = run_stage("phase_sweep_report", module_command(
+            "phase_sweep_report",
+            "--queue-json", str(queue),
+            "--manifest", str(final / "advantage_improvements.json"),
+            "--out-dir", str(final),
+        ), logs / "phase_sweep_report.log")
+    else:
+        emit("phase_sweep_report", "Reusing phase sweep slide decks.")
+    return final
+
+
 def build_empty_report(args: argparse.Namespace, work: Path, candidates: dict[str, Any]) -> Path:
     artifacts = work / "empty_report" / "final_artifacts"
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -413,7 +462,13 @@ def main() -> int:
     parser.add_argument("--disadvantage-enable-gpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gpu-duty-cycle", type=float, default=0.20)
     parser.add_argument("--phase-sweep-samples", type=int, default=12)
+    parser.add_argument("--phase-sweep-max-segments", type=int, default=0)
     parser.add_argument("--phase-sweep-enable-gpu", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--sweep-only",
+        action="store_true",
+        help="Publish the low-cost whole-game phase sweep without refined per-phase passes.",
+    )
     parser.add_argument("--max-batch-lanes", type=int, default=4096)
     parser.add_argument("--render-workers", type=int, default=4)
     parser.add_argument("--force", action="store_true")
@@ -479,12 +534,17 @@ def main() -> int:
         timeline = Path(str(candidates.get("timeline") or ""))
         if not timeline.is_file():
             raise FileNotFoundError(f"Candidate timeline missing: {timeline}")
-        timings["phase_sweep_inventory"] = run_stage("phase_sweep_inventory", module_command(
+        inventory_command = module_command(
             "phase_sweep",
             "--timeline", str(timeline),
             "--analyzed-port", str(args.controlled_port),
             "--out", str(phase_sweep_inventory),
-        ), logs / "phase_sweep_inventory.log")
+        )
+        if args.phase_sweep_max_segments > 0:
+            inventory_command.extend(("--max-segments", str(args.phase_sweep_max_segments)))
+        timings["phase_sweep_inventory"] = run_stage(
+            "phase_sweep_inventory", inventory_command, logs / "phase_sweep_inventory.log"
+        )
     else:
         emit("phase_sweep_inventory", "Reusing phase sweep inventory.")
     if args.force or not (phase_sweep_run / "summary.json").is_file():
@@ -495,6 +555,34 @@ def main() -> int:
         )
     else:
         emit("phase_sweep", "Reusing low-sample phase sweep.")
+
+    if args.sweep_only:
+        phase_sweep_final = build_phase_sweep_artifacts(
+            args,
+            inventory=phase_sweep_inventory,
+            run_dir=phase_sweep_run,
+            queue=phase_sweep_queue,
+            artifact_root=phase_sweep_artifacts,
+            logs=logs,
+            timings=timings,
+        )
+        emit("publish", "Publishing whole-game sweep artifacts.")
+        publish_artifacts(phase_sweep_final, args.job_dir / "artifacts")
+        summary = {
+            "status": "complete",
+            "mode": "sweep-only",
+            "replay": str(args.replay),
+            "controlledPort": args.controlled_port,
+            "simulationBackend": args.simulation_backend,
+            "candidateCount": len(candidates.get("frames") or []),
+            "timings": timings,
+            "report": str((args.job_dir / "artifacts" / "advantage_review.html").resolve()),
+            "neutralReport": str((args.job_dir / "artifacts" / "neutral_review.html").resolve()),
+            "disadvantageReport": str((args.job_dir / "artifacts" / "disadvantage_review.html").resolve()),
+        }
+        (pipeline / "pipeline_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        emit("complete", "Whole-game sweep artifacts are ready.", report="advantage_review.html")
+        return 0
 
     if args.force or not (preflight / "summary.json").is_file():
         timings["preflight"] = run_stage(
@@ -626,44 +714,15 @@ def main() -> int:
         ),
         logs / "report_navigation.log",
     )
-    phase_sweep_final = phase_sweep_artifacts / "final_artifacts"
-    if args.force or not phase_sweep_queue.is_file():
-        timings["phase_sweep_selection"] = run_stage("phase_sweep_selection", module_command(
-            "phase_sweep_selection",
-            "--inventory", str(phase_sweep_inventory),
-            "--run-dir", str(phase_sweep_run),
-            "--out", str(phase_sweep_queue),
-        ), logs / "phase_sweep_selection.log")
-    else:
-        emit("phase_sweep_selection", "Reusing phase sweep selection.")
-    set_queue_metadata(
-        phase_sweep_queue,
-        display_name=args.display_name,
-        slp_version=args.slp_version,
-        backend=args.simulation_backend,
+    phase_sweep_final = build_phase_sweep_artifacts(
+        args,
+        inventory=phase_sweep_inventory,
+        run_dir=phase_sweep_run,
+        queue=phase_sweep_queue,
+        artifact_root=phase_sweep_artifacts,
+        logs=logs,
+        timings=timings,
     )
-    if args.force or not (phase_sweep_final / "advantage_improvements.json").is_file():
-        timings["phase_sweep_artifacts"] = run_stage("phase_sweep_artifacts", module_command(
-            "artifacts",
-            "--queue-json", str(phase_sweep_queue),
-            "--out-root", str(phase_sweep_artifacts),
-            "--workers", str(args.render_workers),
-        ), logs / "phase_sweep_artifacts.log")
-    else:
-        emit("phase_sweep_artifacts", "Reusing phase sweep traces.")
-    phase_sweep_reports = tuple(
-        phase_sweep_final / f"{phase}_review.html"
-        for phase in ("advantage", "neutral", "disadvantage")
-    )
-    if args.force or any(not report.is_file() for report in phase_sweep_reports):
-        timings["phase_sweep_report"] = run_stage("phase_sweep_report", module_command(
-            "phase_sweep_report",
-            "--queue-json", str(phase_sweep_queue),
-            "--manifest", str(phase_sweep_final / "advantage_improvements.json"),
-            "--out-dir", str(phase_sweep_final),
-        ), logs / "phase_sweep_report.log")
-    else:
-        emit("phase_sweep_report", "Reusing phase sweep slide decks.")
     publish_phase_sweep_artifacts(phase_sweep_final, source_artifacts)
     # The low-sample phase sweep provides complete fallback navigation. Refined
     # phase-specific decks then replace only their own pages and trace families.

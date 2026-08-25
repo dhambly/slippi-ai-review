@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from slippi_ai_review.phase_sweep import build_inventory, segment_presentation
+from slippi_ai_review.phase_sweep import build_inventory, limit_segments, segment_presentation
 from slippi_ai_review.phase_sweep_report import interactive_url
 
 
@@ -47,6 +47,33 @@ class PhaseSweepTests(unittest.TestCase):
             "moves": 5, "damage": 55, "moveSequence": [{"moveShortName": "down-b"}],
         }]
         self.assertEqual(segment_presentation(segment, opportunities), ("Down B counter attack · 5 hits · +55%", "Counter Attack"))
+
+    def test_nightly_limit_prioritizes_neutral_and_preserves_timeline_order(self) -> None:
+        segments = [
+            {
+                "id": f"segment-{index}",
+                "timelineIndex": index,
+                "phase": ("neutral", "advantage", "disadvantage")[index % 3],
+                "startFrame": index * 100,
+                "endFrame": index * 100 + 60,
+                "injectionFrame": index * 100 + 12,
+                "originalOutcome": {
+                    "phase": "disadvantage" if index % 3 != 1 else "advantage",
+                    "damage": index,
+                    "killed": False,
+                },
+            }
+            for index in range(18)
+        ]
+
+        selected = limit_segments(segments, 8)
+
+        self.assertEqual(len(selected), 8)
+        self.assertEqual(sum(item["phase"] == "neutral" for item in selected), 4)
+        self.assertEqual(
+            [item["timelineIndex"] for item in selected],
+            sorted(item["timelineIndex"] for item in selected),
+        )
 
 
 if __name__ == "__main__":

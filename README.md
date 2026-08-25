@@ -127,6 +127,48 @@ slippi-review startup install --port 8877
 `startup` currently manages Windows login startup only. On Linux and macOS,
 launch the server manually or use the host's service manager.
 
+## Nightly Session Review
+
+The nightly command finds the newest normal `YYYY-MM` Slippi folder, ignores
+`Mainline`, validates every replay from the newest date, and automatically
+selects the player named `moobs`, `bes`, `M#0085`, or `MOOB#964`. It maps every
+game, runs a bounded whole-game Phillip sweep, groups only repeated mistakes,
+and writes a cross-game HTML report with per-scenario **Practice this in TMCE**
+buttons:
+
+```bash
+slippi-review nightly \
+  --slippi-root "$HOME/Documents/Slippi" \
+  --samples 4 \
+  --segments-per-game 12 \
+  --max-hours 6
+```
+
+Use repeated `--alias` arguments to analyze another identity. Replay hashes are
+stored in `data/nightly/state.json`, so later runs reuse completed games and
+resume interrupted sessions instead of paying for the same simulation twice.
+Unsupported characters, malformed files, and games shorter than 1,800 frames
+are listed as skipped rather than treated as analysis failures.
+
+Nightly reports appear at the top of the dashboard. The report is deterministic:
+one-sample routes, frequent reversals, self-deaths, and isolated observations do
+not become practice priorities. The individual game phase decks remain linked as
+supporting evidence.
+
+For a recurring job, schedule the same command after the play session. On Linux
+or macOS, a typical cron entry is:
+
+```cron
+0 2 * * * cd /absolute/path/to/slippi-ai-review && .venv/bin/slippi-review nightly --slippi-root "$HOME/Documents/Slippi" --samples 4 --segments-per-game 12 --max-hours 6 >> data/nightly/cron.log 2>&1
+```
+
+On Windows with the portable WSL installation, create a Task Scheduler action
+that runs `wsl.exe` with:
+
+```text
+bash -lc 'cd ~/slippi-ai-review && .venv/bin/slippi-review nightly --slippi-root /mnt/c/Users/Administrator/Documents/Slippi --samples 4 --segments-per-game 12 --max-hours 6'
+```
+
 ## Direct Analysis
 
 ```bash
