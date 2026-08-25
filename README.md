@@ -140,7 +140,7 @@ buttons:
 slippi-review nightly \
   --slippi-root "$HOME/Documents/Slippi" \
   --samples 4 \
-  --segments-per-game 12 \
+  --segments-per-game 8 \
   --max-hours 6
 ```
 
@@ -159,15 +159,20 @@ For a recurring job, schedule the same command after the play session. On Linux
 or macOS, a typical cron entry is:
 
 ```cron
-0 2 * * * cd /absolute/path/to/slippi-ai-review && .venv/bin/slippi-review nightly --slippi-root "$HOME/Documents/Slippi" --samples 4 --segments-per-game 12 --max-hours 6 >> data/nightly/cron.log 2>&1
+0 2 * * * cd /absolute/path/to/slippi-ai-review && .venv/bin/slippi-review nightly --slippi-root "$HOME/Documents/Slippi" --samples 4 --segments-per-game 8 --max-hours 6 >> data/nightly/cron.log 2>&1
 ```
 
-On Windows with the portable WSL installation, create a Task Scheduler action
-that runs `wsl.exe` with:
+On Windows, install the included 2:00 AM Task Scheduler job from PowerShell:
 
-```text
-bash -lc 'cd ~/slippi-ai-review && .venv/bin/slippi-review nightly --slippi-root /mnt/c/Users/Administrator/Documents/Slippi --samples 4 --segments-per-game 12 --max-hours 6'
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_nightly_task.ps1
 ```
+
+The task refuses overlapping runs, has a seven-hour execution cap, and writes to
+`data/nightly/scheduled-task.log`. Pass `-At 03:30` or `-SlippiRoot D:\Slippi`
+to the installer to change its schedule or replay location. The Windows runner
+uses the project virtual environment and delegates simulation to the configured
+WSL GPU backend exactly like an interactive run.
 
 ## Direct Analysis
 

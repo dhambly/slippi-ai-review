@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -34,6 +35,60 @@ from .stage_geometry import stage_geometry_for_settings
 
 DEFAULT_ALIASES = ("moobs", "bes", "M#0085", "MOOB#964")
 GAME_NAME = re.compile(r"Game_(\d{8})T\d{6}\.slp$", re.IGNORECASE)
+
+
+def _pid_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _claim_active_run(nightly_dir: Path, run_id: str) -> None:
+    """Prevent a scheduled and interactive nightly run from sharing the GPU."""
+    nightly_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = nightly_dir / ".nightly.lock"
+    active_path = nightly_dir / "active_nightly.json"
+    for attempt in range(2):
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                owner = _read_json(lock_path)
+            except (OSError, json.JSONDecodeError):
+                owner = {}
+            if _pid_running(int(owner.get("pid") or 0)):
+                raise SystemExit(
+                    f"Nightly run {owner.get('runId') or 'unknown'} is already active (PID {owner.get('pid')})."
+                )
+            if attempt == 0:
+                lock_path.unlink(missing_ok=True)
+                continue
+            raise SystemExit(f"Could not replace stale nightly lock: {lock_path}")
+        else:
+            owner = {"runId": run_id, "pid": os.getpid(), "startedAt": _utc_now()}
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(owner, stream)
+            _write_json_atomic(active_path, owner)
+
+            def release() -> None:
+                for path in (lock_path, active_path):
+                    try:
+                        current = _read_json(path)
+                    except (OSError, json.JSONDecodeError):
+                        current = {}
+                    if current.get("runId") == run_id and int(current.get("pid") or 0) == os.getpid():
+                        path.unlink(missing_ok=True)
+
+            atexit.register(release)
+            return
 
 
 def _sha256(path: Path) -> str:
@@ -328,6 +383,7 @@ def _session_metadata(
     completed = [game for game in games if game.get("status") in {"complete", "reused"}]
     failed = [game for game in games if game.get("status") == "failed"]
     skipped = [game for game in games if game.get("status") == "skipped"]
+    deferred = [game for game in games if game.get("status") == "deferred"]
     return {
         "schemaVersion": 1,
         "nightlyId": run_id,
@@ -346,6 +402,7 @@ def _session_metadata(
             "analyzedGames": len(completed),
             "failedGames": len(failed),
             "skippedGames": len(skipped),
+            "deferredGames": len(deferred),
             "processingSeconds": round(elapsed, 3),
             "processingTime": _duration(elapsed),
         },
@@ -362,14 +419,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--upload-dir", type=Path, default=DEFAULT_UPLOAD_DIR)
     parser.add_argument("--nightly-dir", type=Path, default=settings.data_dir / "nightly")
     parser.add_argument("--run-id", default=str(uuid.uuid4()))
-    parser.add_argument("--samples", type=int, default=12)
-    parser.add_argument("--segments-per-game", type=int, default=12)
+    parser.add_argument("--samples", type=int, default=4)
+    parser.add_argument("--segments-per-game", type=int, default=8)
     parser.add_argument("--max-hours", type=float, default=6.0)
     parser.add_argument("--min-game-frames", type=int, default=1800)
     parser.add_argument("--max-games", type=int)
     parser.add_argument("--max-batch-lanes", type=int, default=4096)
     parser.add_argument("--render-workers", type=int, default=6)
-    parser.add_argument("--gpu-duty-cycle", type=float, default=0.5)
+    parser.add_argument("--gpu-duty-cycle", type=float, default=1.0)
     parser.add_argument("--simulation-backend", choices=("legacy", "decomp"), default=settings.simulation_backend)
     parser.add_argument("--force", action="store_true", help="Ignore the replay-hash state and create fresh reviews")
     parser.add_argument("--dry-run", action="store_true")
@@ -388,6 +445,8 @@ def main() -> int:
     alias_set = {_normalized(alias) for alias in aliases}
     args.upload_dir = args.upload_dir.resolve()
     args.nightly_dir = args.nightly_dir.resolve()
+    if not args.dry_run:
+        _claim_active_run(args.nightly_dir, args.run_id)
     folder, date, replays = discover_replays(args.slippi_root.resolve(), args.date)
     if args.max_games is not None:
         replays = replays[:args.max_games]
@@ -410,6 +469,10 @@ def main() -> int:
         for number, source in enumerate(replays, 1):
             if time.monotonic() >= deadline:
                 stream.write("Nightly deadline reached before the next replay.\n")
+                games.extend(
+                    {"filename": pending.name, "status": "deferred", "reason": "nightly deadline reached"}
+                    for pending in replays[number - 1 :]
+                )
                 break
             try:
                 try:
@@ -461,7 +524,8 @@ def main() -> int:
                 stream.flush()
 
     elapsed = time.perf_counter() - started
-    status = "complete" if games and not any(game.get("status") == "failed" for game in games) else "partial"
+    incomplete = {"failed", "deferred"}
+    status = "complete" if len(games) == len(replays) and not any(game.get("status") in incomplete for game in games) else "partial"
     if args.dry_run:
         status = "dry-run"
     session = _session_metadata(args.run_id, date, folder, aliases, games, status, started_at, elapsed)

@@ -104,11 +104,42 @@ def _move_label(value: Any, character: str = "") -> str:
         "lying ground up": "getup option",
         "forward tech": "tech forward",
         "backward tech": "tech back",
+        "edge catching": "grab ledge",
+        "no commitment": "drift / no immediate button",
+        "tech miss up": "missed tech",
+        "tech miss down": "missed tech",
+        "ground roll backward up": "roll backward after missed tech",
+        "ground roll backward down": "roll backward after missed tech",
+        "ground roll forward up": "roll forward after missed tech",
+        "ground roll forward down": "roll forward after missed tech",
     }
     move = aliases.get(move, move)
     if move == "down b" and character in {"Fox", "Falco"}:
         return "shine"
+    if move.startswith("sword dance") and character in {"Fox", "Falco"}:
+        return "side b"
     return move or "no clear commitment"
+
+
+def _phillip_action(target: dict[str, Any], character: str) -> str:
+    """Describe the first meaningful model choice, skipping forced hit/knockdown states."""
+    lane = target.get("representative_lane") or {}
+    signature = lane.get("comboOptionSignature") or ""
+    segments = ((lane.get("option") or {}).get("actionSegments") or [])
+    names = [str(segment.get("actionName") or "") for segment in segments]
+    if str(signature).startswith("TECH_MISS"):
+        roll = next((name for name in names if name.startswith("GROUND_ROLL_")), "")
+        return _move_label(roll or signature, character)
+    if str(signature).startswith("THROWN_"):
+        response = next(
+            (
+                name for name in names
+                if "TECH" in name or name.startswith("GROUND_ROLL_") or name in {"AIRDODGE", "JUMPING_ARIAL_FORWARD", "JUMPING_ARIAL_BACKWARD"}
+            ),
+            "",
+        )
+        return _move_label(response, character) if response else "DI through the throw"
+    return _move_label(signature, character)
 
 
 def _action_group(action: str) -> str:
@@ -266,10 +297,7 @@ def collect_review_evidence(review_dir: Path) -> list[tuple[str, Evidence]]:
         model_dealt = float(option.get("damageDealt") or 0.0)
         model_taken = float(option.get("damageTaken") or 0.0)
         model_kill = float(option.get("killRate") or 0.0)
-        phillip_action = _move_label(
-            (target.get("representative_lane") or {}).get("comboOptionSignature") or signature,
-            character,
-        )
+        phillip_action = _phillip_action(target, character)
         replay_action = _move_label(
             outcome.get("openingMove") or str(segment.get("title") or "").split()[0],
             character,
@@ -349,16 +377,22 @@ def _pattern_copy(phase: str, action: str, items: list[Evidence]) -> tuple[str, 
     for item in items:
         replay_actions[item.replay_action.split(" (", 1)[0]] += 1
     replay_examples = sorted(replay_actions, key=lambda value: (-replay_actions[value], value))[:2]
-    replay_example = " and ".join(replay_examples)
+    replay_example = " or ".join(replay_examples)
     if phase == "neutral":
-        title = f"Getting opened during {action}s"
+        title = {
+            "aerial commitment": "Getting opened during aerial commitments",
+            "grab commitment": "Getting opened during grab commitments",
+            "defensive timing": "Getting opened during defensive timing",
+            "movement": "Getting opened while moving",
+            "grounded attack commitment": "Getting opened during grounded attacks",
+        }.get(action, f"Getting opened during {action}")
         summary = (
-            f"This showed up {len(items)} times after {replay_example}: the replay most often got caught by {opponent}, "
+            f"This showed up {len(items)} times during {replay_example}: the replay most often got caught by {opponent}, "
             f"while Phillip's stable branches most often began with {phillip}."
         )
         drill = (
-            f"Recreate the listed spacing and alternate the recorded {replay_example} timing with {phillip}. Stop each rep at the first clean hit; "
-            "do 10 reps on each side before increasing speed."
+            f"Open each linked position and use {phillip} at the point where the replay committed to {replay_example}. "
+            "Stop at the first clean hit and complete 10 correct responses on each side."
         )
     elif phase == "advantage":
         title = f"Leaving damage after {action} openings"
@@ -457,6 +491,7 @@ def _evidence_card(item: dict[str, Any]) -> str:
         <div class="evidence-head"><strong>{_esc(item['elapsed'])} on {_esc(item['stage'])}</strong><span>{_esc(item['matchup'])}</span></div>
         <p><b>Replay:</b> {_esc(item['original_result'])} after {_esc(item['replay_action'])}.</p>
         <p><b>Phillip:</b> {_esc(item['phillip_result'])}.</p>
+        <p class="support">This response appeared in {int(item['option_samples'])} of {int(item['sweep_samples'])} simulations.</p>
         <div class="evidence-actions"><a href="{_esc(item['source_url'])}">Open full comparison</a><button class="practice" data-practice="{_esc(practice)}">Practice this in TMCE</button><span role="status"></span></div>
       </div>
     </article>"""
@@ -486,7 +521,7 @@ def build_html(payload: dict[str, Any]) -> str:
         for game in session.get("games") or [] if game.get("reviewId")
     )
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Nightly Melee Review - {_esc(session.get('date'))}</title><style>
-    :root{{color-scheme:dark;--bg:#0b0e0c;--panel:#151a17;--raised:#1d241f;--line:#344039;--text:#f2f5f3;--muted:#9eaaa3;--green:#66d89b;--cyan:#67c6dd;--amber:#efb55e}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 Inter,Segoe UI,system-ui,sans-serif}}a{{color:inherit}}.top{{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:58px;padding:10px 22px;border-bottom:3px solid var(--green);background:#070908}}.top strong{{font-size:17px}}.top a{{padding:7px 9px;border:1px solid var(--line);border-radius:4px;text-decoration:none;font-size:12px;font-weight:800}}main{{width:min(1120px,calc(100% - 28px));margin:0 auto 80px}}.hero{{padding:36px 0 24px;border-bottom:1px solid var(--line)}}.eyebrow,.phase,.drill span{{color:var(--green);font-size:11px;font-weight:900;text-transform:uppercase}}h1{{max-width:760px;margin:5px 0 8px;font-size:34px;line-height:1.15;letter-spacing:0}}.hero>p{{max-width:760px;margin:0;color:var(--muted)}}.stats{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:24px;border:1px solid var(--line)}}.stats div{{padding:13px;border-right:1px solid var(--line)}}.stats div:last-child{{border:0}}.stats strong,.stats span{{display:block}}.stats strong{{font-size:21px}}.stats span{{color:var(--muted);font-size:11px}}.section-head{{display:flex;align-items:end;justify-content:space-between;gap:12px;padding:26px 0 10px}}.section-head h2{{margin:0;font-size:18px}}.section-head p{{margin:0;color:var(--muted);font-size:12px}}.pattern{{margin-bottom:24px;border-top:1px solid var(--line)}}.pattern>header{{display:flex;justify-content:space-between;gap:20px;padding:20px 0 10px}}h2{{margin:3px 0 0;font-size:22px}}.confidence{{text-align:right}}.confidence strong,.confidence span{{display:block}}.confidence span{{color:var(--muted);font-size:11px}}.summary{{max-width:800px;margin:0 0 12px;font-size:16px}}.drill{{display:grid;grid-template-columns:110px 1fr;gap:14px;padding:12px;border-left:3px solid var(--green);background:var(--raised)}}.drill p{{margin:0}}.evidence-list{{display:grid;gap:10px;margin-top:12px}}.evidence{{display:grid;grid-template-columns:minmax(320px,1.15fr) minmax(280px,1fr);border:1px solid var(--line);background:var(--panel)}}.viewer{{position:relative;min-height:260px;background:#030504}}.viewer iframe{{position:absolute;inset:0;width:100%;height:100%;border:0}}.viewer-missing{{display:grid;place-items:center;height:100%;color:var(--muted)}}.evidence-copy{{padding:15px}}.evidence-head{{display:flex;justify-content:space-between;gap:10px;padding-bottom:9px;border-bottom:1px solid var(--line)}}.evidence-head span{{color:var(--muted);font-size:11px}}.evidence-copy p{{margin:10px 0}}.evidence-actions{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}}button,.evidence-actions a{{min-height:36px;padding:7px 10px;border:1px solid #4b745e;border-radius:4px;background:var(--raised);color:var(--text);font:inherit;font-size:12px;font-weight:800;cursor:pointer;text-decoration:none}}button.practice{{background:var(--green);color:#07120c}}button:disabled{{opacity:.55;cursor:wait}}.evidence-actions span{{color:var(--muted);font-size:11px}}.games{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--line);border-left:1px solid var(--line)}}.games a{{display:block;min-width:0;padding:11px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);text-decoration:none}}.games span,.games small{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.games small{{color:var(--muted)}}.empty{{padding:30px 0;border-top:1px solid var(--line)}}@media(max-width:760px){{h1{{font-size:28px}}.stats{{grid-template-columns:repeat(2,1fr)}}.stats div:nth-child(2){{border-right:0}}.stats div:nth-child(-n+2){{border-bottom:1px solid var(--line)}}.pattern>header{{display:block}}.confidence{{margin-top:8px;text-align:left}}.evidence{{grid-template-columns:1fr}}.viewer{{min-height:240px}}.drill{{grid-template-columns:1fr;gap:4px}}.games{{grid-template-columns:1fr}}}}
+    :root{{color-scheme:dark;--bg:#0b0e0c;--panel:#151a17;--raised:#1d241f;--line:#344039;--text:#f2f5f3;--muted:#9eaaa3;--green:#66d89b;--cyan:#67c6dd;--amber:#efb55e}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 Inter,Segoe UI,system-ui,sans-serif}}a{{color:inherit}}.top{{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:58px;padding:10px 22px;border-bottom:3px solid var(--green);background:#070908}}.top strong{{font-size:17px}}.top a{{padding:7px 9px;border:1px solid var(--line);border-radius:4px;text-decoration:none;font-size:12px;font-weight:800}}main{{width:min(1120px,calc(100% - 28px));margin:0 auto 80px}}.hero{{padding:36px 0 24px;border-bottom:1px solid var(--line)}}.eyebrow,.phase,.drill span{{color:var(--green);font-size:11px;font-weight:900;text-transform:uppercase}}h1{{max-width:760px;margin:5px 0 8px;font-size:34px;line-height:1.15;letter-spacing:0}}.hero>p{{max-width:760px;margin:0;color:var(--muted)}}.stats{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:24px;border:1px solid var(--line)}}.stats div{{padding:13px;border-right:1px solid var(--line)}}.stats div:last-child{{border:0}}.stats strong,.stats span{{display:block}}.stats strong{{font-size:21px}}.stats span{{color:var(--muted);font-size:11px}}.section-head{{display:flex;align-items:end;justify-content:space-between;gap:12px;padding:26px 0 10px}}.section-head h2{{margin:0;font-size:18px}}.section-head p{{margin:0;color:var(--muted);font-size:12px}}.pattern{{margin-bottom:24px;border-top:1px solid var(--line)}}.pattern>header{{display:flex;justify-content:space-between;gap:20px;padding:20px 0 10px}}h2{{margin:3px 0 0;font-size:22px}}.confidence{{text-align:right}}.confidence strong,.confidence span{{display:block}}.confidence span{{color:var(--muted);font-size:11px}}.summary{{max-width:800px;margin:0 0 12px;font-size:16px}}.drill{{display:grid;grid-template-columns:110px 1fr;gap:14px;padding:12px;border-left:3px solid var(--green);background:var(--raised)}}.drill p{{margin:0}}.evidence-list{{display:grid;gap:10px;margin-top:12px}}.evidence{{display:grid;grid-template-columns:minmax(320px,1.15fr) minmax(280px,1fr);border:1px solid var(--line);background:var(--panel)}}.viewer{{position:relative;min-height:260px;background:#030504}}.viewer iframe{{position:absolute;inset:0;width:100%;height:100%;border:0}}.viewer-missing{{display:grid;place-items:center;height:100%;color:var(--muted)}}.evidence-copy{{padding:15px}}.evidence-head{{display:flex;justify-content:space-between;gap:10px;padding-bottom:9px;border-bottom:1px solid var(--line)}}.evidence-head span{{color:var(--muted);font-size:11px}}.evidence-copy p{{margin:10px 0}}.evidence-copy .support{{color:var(--muted);font-size:12px}}.evidence-actions{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}}button,.evidence-actions a{{min-height:36px;padding:7px 10px;border:1px solid #4b745e;border-radius:4px;background:var(--raised);color:var(--text);font:inherit;font-size:12px;font-weight:800;cursor:pointer;text-decoration:none}}button.practice{{background:var(--green);color:#07120c}}button:disabled{{opacity:.55;cursor:wait}}.evidence-actions span{{color:var(--muted);font-size:11px}}.games{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--line);border-left:1px solid var(--line)}}.games a{{display:block;min-width:0;padding:11px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);text-decoration:none}}.games span,.games small{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.games small{{color:var(--muted)}}.empty{{padding:30px 0;border-top:1px solid var(--line)}}@media(max-width:760px){{h1{{font-size:28px}}.stats{{grid-template-columns:repeat(2,1fr)}}.stats div:nth-child(2){{border-right:0}}.stats div:nth-child(-n+2){{border-bottom:1px solid var(--line)}}.pattern>header{{display:block}}.confidence{{margin-top:8px;text-align:left}}.evidence{{grid-template-columns:1fr}}.viewer{{min-height:240px}}.drill{{grid-template-columns:1fr;gap:4px}}.games{{grid-template-columns:1fr}}}}
     </style></head><body><header class="top"><strong>Nightly Melee Review</strong><a href="/">Dashboard</a></header><main><section class="hero"><span class="eyebrow">{_esc(session.get('date'))} session</span><h1>{_esc(session.get('headline') or 'The habits worth practicing tomorrow')}</h1><p>Repeated patterns only. Each recommendation survived minimum sample, reversal, self-death, and cross-game recurrence checks.</p><div class="stats"><div><strong>{int(stats.get('analyzedGames') or 0)}</strong><span>games analyzed</span></div><div><strong>{int(payload.get('evidenceCount') or 0)}</strong><span>qualified moments</span></div><div><strong>{len(patterns)}</strong><span>repeated patterns</span></div><div><strong>{_esc(stats.get('processingTime') or 'n/a')}</strong><span>processing time</span></div></div></section><div class="section-head"><div><span class="eyebrow">Start here</span><h2>Practice priorities</h2></div><p>Ordered by recurrence, stability, and outcome gap.</p></div>{cards}<div class="section-head"><div><span class="eyebrow">Evidence</span><h2>Every processed game</h2></div><p>Open a full phase deck for context.</p></div><div class="games">{game_links}</div></main><script>
     const loadViewer=entry=>{{const frame=entry.target.querySelector('iframe[data-src]');if(frame&&!frame.src)frame.src=frame.dataset.src}};const observer=new IntersectionObserver(entries=>entries.filter(entry=>entry.isIntersecting).forEach(entry=>{{loadViewer(entry);observer.unobserve(entry.target)}}),{{rootMargin:'300px'}});document.querySelectorAll('.viewer').forEach(viewer=>observer.observe(viewer));document.addEventListener('click',async event=>{{const button=event.target.closest('.practice');if(!button)return;const status=button.parentElement.querySelector('[role=status]'),payload=JSON.parse(button.dataset.practice);button.disabled=true;status.textContent='Preparing Training Mode...';try{{const response=await fetch(`/api/reviews/${{payload.reviewId}}/training-mode`,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{targetIndex:payload.targetIndex,alternativeIndex:0,scenarioMode:'variations',variationStartFrame:payload.variationStartFrame,variationSource:'replay',queueMode:'phase-sweep'}})}});const body=await response.json();if(!response.ok||!body.ok)throw new Error(body.error?.message||'Training Mode launch failed.');status.textContent=`Ready from f${{body.scenario.practiceStartFrame}}.`}}catch(error){{status.textContent=error.message||'Training Mode launch failed.'}}finally{{button.disabled=false}}}});
     </script></body></html>"""

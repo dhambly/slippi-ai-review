@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from slippi_ai_review.nightly import discover_replays, target_player
-from slippi_ai_review.nightly_report import Evidence, build_html, build_patterns
+from slippi_ai_review.nightly_report import Evidence, _phillip_action, build_html, build_patterns
 
 
 def test_discover_replays_uses_newest_normal_folder_and_date(tmp_path: Path) -> None:
@@ -71,6 +71,27 @@ def test_patterns_require_more_than_one_game_for_practice_priority() -> None:
     assert len(recurring) == 1
     assert recurring[0].title == "Getting opened during aerial commitments"
     assert not watchlist
+
+
+def test_movement_pattern_has_human_title() -> None:
+    recurring, _watchlist = build_patterns([
+        ("neutral|Fox vs Marth|movement", evidence("00000000-0000-4000-8000-000000000001")),
+        ("neutral|Fox vs Marth|movement", evidence("00000000-0000-4000-8000-000000000002")),
+    ])
+    assert recurring[0].title == "Getting opened while moving"
+
+
+def test_phillip_action_skips_forced_missed_tech_state() -> None:
+    target = {
+        "representative_lane": {
+            "comboOptionSignature": "TECH_MISS_UP",
+            "option": {"actionSegments": [
+                {"actionName": "TECH_MISS_UP"},
+                {"actionName": "GROUND_ROLL_BACKWARD_UP"},
+            ]},
+        }
+    }
+    assert _phillip_action(target, "Fox") == "roll backward after missed tech"
 
 
 def test_report_contains_practice_controls_and_plain_language() -> None:
