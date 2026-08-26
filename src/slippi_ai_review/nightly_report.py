@@ -19,6 +19,7 @@ PHASE_LABELS = {
     "advantage": "Punish",
     "disadvantage": "Defense",
 }
+DIRECT_RESPONSE_MAX_FRAMES = 30
 
 
 @dataclass
@@ -281,6 +282,14 @@ def _option_rows(rows: Iterable[dict[str, Any]], frame: int, signature: str) -> 
     ]
 
 
+def _is_direct_response(frame: int, outcome: dict[str, Any]) -> bool:
+    opening = outcome.get("openingFrame")
+    if opening is None:
+        return False
+    delta = frame - int(opening)
+    return 0 <= delta <= DIRECT_RESPONSE_MAX_FRAMES
+
+
 def collect_review_evidence(review_dir: Path) -> list[tuple[str, Evidence]]:
     review = _read_json(review_dir / "review.json")
     review_id = str(review["reviewId"])
@@ -366,6 +375,8 @@ def collect_review_evidence(review_dir: Path) -> list[tuple[str, Evidence]]:
             original_result = f"{original_hits or 1} hit, {original_damage:.0f}% before the sequence ended"
             phillip_result = f"{model_dealt:.0f}% average" + (f", {model_kill:.0%} kill rate" if model_kill else "")
         elif phase == "disadvantage":
+            if not _is_direct_response(frame, outcome):
+                continue
             improvement = original_damage - model_taken + model_dealt * 0.25
             if not original_kill and improvement < 6.0:
                 continue
@@ -563,7 +574,7 @@ def _evidence_card(item: dict[str, Any]) -> str:
     <article class="evidence" id="scenario-{_esc(item['review_id'])}-{int(item['target_index'])}">
       <div class="viewer">{viewer}</div>
       <div class="evidence-copy">
-        <div class="evidence-head"><strong>{_esc(item['elapsed'])} on {_esc(item['stage'])}</strong><span>{_esc(item['matchup'])}</span></div>
+        <div class="evidence-head"><strong>{_esc(item['elapsed'])} on {_esc(item['stage'])}</strong><span>{_esc(item['matchup'])}<br>{_esc(item['game_name'])}</span></div>
         <p><b>Replay:</b> {_esc(replay_outcome)}.</p>
         <p><b>Phillip used {_esc(item['phillip_action'])}:</b> {_esc(item['phillip_result'])}.</p>
         <p class="support">This branch family appeared in {int(item['option_samples'])} of {int(item['sweep_samples'])} simulations.</p>

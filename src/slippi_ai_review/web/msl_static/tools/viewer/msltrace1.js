@@ -114,13 +114,38 @@ function roundNumber(value) {
   return Object.is(rounded, -0) ? 0 : rounded;
 }
 
-function externalCharId(internalCharId) {
-  if (internalCharId === 1) return 2;
-  if (internalCharId === 7) return 19;
-  if (internalCharId === 18) return 9;
-  if (internalCharId === 19) return 18;
-  if (internalCharId === 22) return 20;
-  return internalCharId;
+const externalCharacterIdByInternalId = [
+  8,  // Mario
+  2,  // Fox
+  0,  // Captain Falcon
+  1,  // Donkey Kong
+  4,  // Kirby
+  5,  // Bowser
+  6,  // Link
+  19, // Sheik
+  11, // Ness
+  12, // Peach
+  14, // Popo / Ice Climbers
+  14, // Nana / Ice Climbers
+  13, // Pikachu
+  16, // Samus
+  17, // Yoshi
+  15, // Jigglypuff
+  10, // Mewtwo
+  7,  // Luigi
+  9,  // Marth
+  18, // Zelda
+  21, // Young Link
+  22, // Dr. Mario
+  20, // Falco
+  24, // Pichu
+  3,  // Mr. Game & Watch
+  25, // Ganondorf
+  23, // Roy
+];
+
+export function externalCharId(internalCharId) {
+  return externalCharacterIdByInternalId[internalCharId] ?? internalCharId;
 }
 
 function viewerTeamId(teamId) {

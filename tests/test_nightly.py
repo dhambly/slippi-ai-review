@@ -11,6 +11,7 @@ from slippi_ai_review.nightly_report import (
     Evidence,
     _option_rows,
     _evidence_card,
+    _is_direct_response,
     _phillip_action,
     apply_curation,
     build_html,
@@ -237,6 +238,12 @@ def test_disadvantage_card_names_the_opening_move_without_repeating_after() -> N
 
     assert "Replay:</b> lost the stock after dtilt." in card
     assert "after defense after hit" not in card
+
+
+def test_disadvantage_response_must_stay_near_the_named_opening() -> None:
+    assert _is_direct_response(120, {"openingFrame": 100})
+    assert not _is_direct_response(131, {"openingFrame": 100})
+    assert not _is_direct_response(100, {})
 
 
 def test_patterns_require_more_than_one_game_for_practice_priority() -> None:
