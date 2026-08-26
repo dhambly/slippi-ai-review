@@ -11,6 +11,7 @@ from slippi_ai_review.nightly_report import (
     Evidence,
     _option_rows,
     _evidence_card,
+    _dominant_choice,
     _is_checkmate_candidate,
     _is_direct_response,
     _lane_is_favorable,
@@ -227,6 +228,9 @@ def evidence(review_id: str, phase: str = "neutral") -> Evidence:
         option_share=0.33,
         reversal_rate=0,
         self_death_rate=0,
+        dominant_action="dash movement",
+        choice_samples=4,
+        choice_rate=1.0,
         favorable_samples=4,
         favorable_rate=1.0,
         source_url=f"/review-artifacts/{review_id}/neutral_review.html#slide-1",
@@ -252,14 +256,32 @@ def test_disadvantage_response_must_stay_near_the_named_opening() -> None:
 
 def test_checkmate_candidate_requires_consistency_not_cross_game_recurrence() -> None:
     item = evidence("00000000-0000-4000-8000-000000000001")
+    item.sweep_samples = 4
     assert _is_checkmate_candidate(item)
-    item.favorable_samples = 3
-    item.favorable_rate = 0.75
+    item.choice_samples = 3
+    item.choice_rate = 0.75
     assert not _is_checkmate_candidate(item)
-    item.option_samples = 8
-    item.favorable_samples = 7
-    item.favorable_rate = 0.875
+    item.sweep_samples = 8
+    item.choice_samples = 7
+    item.choice_rate = 0.875
     assert _is_checkmate_candidate(item)
+
+
+def test_dominant_choice_skips_forced_opener_and_counts_model_answer() -> None:
+    rows = [
+        {"score": 10, "comboOptionSignature": "DAIR_LANDING", "option": {"actionSegments": [
+            {"actionName": "DAIR_LANDING"}, {"actionName": "DOWN_B_GROUND"},
+        ]}},
+        {"score": 9, "comboOptionSignature": "DAIR_LANDING", "option": {"actionSegments": [
+            {"actionName": "DAIR_LANDING"}, {"actionName": "DOWN_B_GROUND"},
+        ]}},
+        {"score": 8, "comboOptionSignature": "DAIR_LANDING", "option": {"actionSegments": [
+            {"actionName": "DAIR_LANDING"}, {"actionName": "BAIR"},
+        ]}},
+    ]
+    action, selected = _dominant_choice(rows, character="Fox", phase="advantage", opening="dair")
+    assert action == "shine"
+    assert len(selected) == 2
 
 
 def test_favorable_lane_rejects_reversals_and_requires_phase_specific_gain() -> None:
@@ -381,7 +403,7 @@ def test_report_surfaces_one_game_checkmate_candidate() -> None:
         "checkmateCandidates": [item.__dict__],
     })
     assert "Checkmate candidates" in page
-    assert "4/4 sampled branches" in page
+    assert "independently chose this answer in 4/12 samples" in page
 
 
 def test_report_uses_singular_more_example_label() -> None:
