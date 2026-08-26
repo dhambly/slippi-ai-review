@@ -11,7 +11,9 @@ from slippi_ai_review.nightly_report import (
     Evidence,
     _option_rows,
     _evidence_card,
+    _is_checkmate_candidate,
     _is_direct_response,
+    _lane_is_favorable,
     _phillip_action,
     apply_curation,
     build_html,
@@ -225,6 +227,8 @@ def evidence(review_id: str, phase: str = "neutral") -> Evidence:
         option_share=0.33,
         reversal_rate=0,
         self_death_rate=0,
+        favorable_samples=4,
+        favorable_rate=1.0,
         source_url=f"/review-artifacts/{review_id}/neutral_review.html#slide-1",
         viewer_url=None,
     )
@@ -244,6 +248,34 @@ def test_disadvantage_response_must_stay_near_the_named_opening() -> None:
     assert _is_direct_response(120, {"openingFrame": 100})
     assert not _is_direct_response(131, {"openingFrame": 100})
     assert not _is_direct_response(100, {})
+
+
+def test_checkmate_candidate_requires_consistency_not_cross_game_recurrence() -> None:
+    item = evidence("00000000-0000-4000-8000-000000000001")
+    assert _is_checkmate_candidate(item)
+    item.favorable_samples = 3
+    item.favorable_rate = 0.75
+    assert not _is_checkmate_candidate(item)
+    item.option_samples = 8
+    item.favorable_samples = 7
+    item.favorable_rate = 0.875
+    assert _is_checkmate_candidate(item)
+
+
+def test_favorable_lane_rejects_reversals_and_requires_phase_specific_gain() -> None:
+    row = {
+        "damageDealt": 12,
+        "damageTaken": 0,
+        "score": 12,
+        "scoreDeltaVsReplay": 8,
+        "outperformedReplay": True,
+    }
+    assert _lane_is_favorable("neutral", row, original_damage=20, original_kill=False)
+    assert _lane_is_favorable("advantage", row, original_damage=8, original_kill=False)
+    assert _lane_is_favorable("disadvantage", row, original_damage=20, original_kill=False)
+    assert not _lane_is_favorable("advantage", row, original_damage=12, original_kill=False)
+    row["comboReversed"] = True
+    assert not _lane_is_favorable("neutral", row, original_damage=20, original_kill=False)
 
 
 def test_patterns_require_more_than_one_game_for_practice_priority() -> None:
@@ -333,10 +365,23 @@ def test_report_contains_practice_controls_and_plain_language() -> None:
         "session": {"date": "2026-08-24", "stats": {"analyzedGames": 2}, "games": []},
         "evidenceCount": 2,
         "recurringPatterns": [pattern[0].__dict__ | {"evidence": [item.__dict__ for item in pattern[0].evidence]}],
+        "checkmateCandidates": [],
     })
     assert "Getting opened during aerial commitments" in page
     assert "Practice this in TMCE" in page
     assert "qualified comparisons repeated across games" in page
+
+
+def test_report_surfaces_one_game_checkmate_candidate() -> None:
+    item = evidence("00000000-0000-4000-8000-000000000001")
+    page = build_html({
+        "session": {"date": "2026-08-24", "stats": {"analyzedGames": 1}, "games": []},
+        "evidenceCount": 1,
+        "recurringPatterns": [],
+        "checkmateCandidates": [item.__dict__],
+    })
+    assert "Checkmate candidates" in page
+    assert "4/4 sampled branches" in page
 
 
 def test_report_uses_singular_more_example_label() -> None:

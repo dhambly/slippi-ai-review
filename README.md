@@ -139,7 +139,7 @@ buttons:
 ```bash
 slippi-review nightly \
   --slippi-root "$HOME/Documents/Slippi" \
-  --samples 4 \
+  --samples 8 \
   --segments-per-game 8 \
   --max-hours 6
 ```
@@ -159,7 +159,7 @@ For a recurring job, schedule the same command after the play session. On Linux
 or macOS, a typical cron entry is:
 
 ```cron
-0 2 * * * cd /absolute/path/to/slippi-ai-review && .venv/bin/slippi-review nightly --slippi-root "$HOME/Documents/Slippi" --samples 4 --segments-per-game 8 --max-hours 6 >> data/nightly/cron.log 2>&1
+0 2 * * * cd /absolute/path/to/slippi-ai-review && .venv/bin/slippi-review nightly --slippi-root "$HOME/Documents/Slippi" --samples 8 --segments-per-game 8 --max-hours 6 >> data/nightly/cron.log 2>&1
 ```
 
 On Windows, install the included 2:00 AM Task Scheduler job from PowerShell:

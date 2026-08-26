@@ -601,7 +601,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--upload-dir", type=Path, default=DEFAULT_UPLOAD_DIR)
     parser.add_argument("--nightly-dir", type=Path, default=settings.data_dir / "nightly")
     parser.add_argument("--run-id", default=str(uuid.uuid4()))
-    parser.add_argument("--samples", type=int, default=4)
+    parser.add_argument("--samples", type=int, default=8)
     parser.add_argument("--segments-per-game", type=int, default=8)
     parser.add_argument("--max-hours", type=float, default=6.0)
     parser.add_argument("--min-game-frames", type=int, default=1800)
