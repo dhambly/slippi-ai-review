@@ -19,11 +19,13 @@ from typing import Any, Iterable
 import numpy as np
 
 from .simulation import (
+    _LogicalHitTracker,
     _action_name,
     _combo_outperformed_replay,
     _groups,
     _input_token,
     _load_frame_metadata,
+    _move_ids_for_slots,
     _option_summary,
     _recorded_contact_frame,
     _replay_baseline_after_anchor,
@@ -408,10 +410,12 @@ def main() -> int:
         load_state,
     )
     from slippi_ai.sim_env.observations import GameBatchBuffers
+    from tools.slippi.action_state_tables import load_action_state_tables
 
     timings: dict[str, Any] = {}
     phase = time.perf_counter()
     authority = extract_replay_authority(args.replay.resolve())
+    action_state_tables = load_action_state_tables(str(args.msl_root.resolve() / "data"))
     timings["extract_replay_authority_s"] = time.perf_counter() - phase
     num_players = int(authority.config[0]["match"]["num_players"])
     if num_players != 2:
@@ -636,13 +640,29 @@ def main() -> int:
                 start_state = env.current_frame.copy()
                 current_records = start_records.copy()
                 previous_state = start_state.copy()
+                initial_analyzed_slots = [_slot(start_state[lane], analyzed) for lane in range(batch)]
+                initial_defender_slots = [_slot(start_state[lane], defender) for lane in range(batch)]
                 initial_actions = np.asarray(
-                    [int(_slot(start_state[lane], analyzed)["action_id"]) for lane in range(batch)],
-                    dtype=np.uint16,
+                    [int(slot["action_id"]) for slot in initial_analyzed_slots], dtype=np.uint16
                 )
                 initial_constrained = np.asarray(
-                    [_is_constrained(_slot(start_state[lane], defender)) for lane in range(batch)],
+                    [_is_constrained(slot) for slot in initial_defender_slots],
                     dtype=np.bool_,
+                )
+                initial_analyzed_constrained = np.asarray(
+                    [_is_constrained(slot) for slot in initial_analyzed_slots], dtype=np.bool_
+                )
+                analyzed_hit_tracker = _LogicalHitTracker(
+                    move_ids=_move_ids_for_slots(initial_analyzed_slots, action_state_tables),
+                    action_ids=np.asarray([int(slot["action_id"]) for slot in initial_analyzed_slots]),
+                    action_frames=np.asarray([float(slot["action_frame"]) for slot in initial_analyzed_slots]),
+                    already_counted=initial_constrained,
+                )
+                opponent_hit_tracker = _LogicalHitTracker(
+                    move_ids=_move_ids_for_slots(initial_defender_slots, action_state_tables),
+                    action_ids=np.asarray([int(slot["action_id"]) for slot in initial_defender_slots]),
+                    action_frames=np.asarray([float(slot["action_frame"]) for slot in initial_defender_slots]),
+                    already_counted=initial_analyzed_constrained,
                 )
                 end_state = start_state.copy()
                 terminal_evidence: list[dict[str, Any]] = [{} for _ in chunk]
@@ -681,6 +701,33 @@ def main() -> int:
                     env.observe_viewpoints(np.zeros(batch, dtype=np.uint8))
                     state = env.current_frame.copy()
 
+                    analyzed_slots = [_slot(state[lane], analyzed) for lane in range(batch)]
+                    defender_slots = [_slot(state[lane], defender) for lane in range(batch)]
+                    previous_analyzed_slots = [_slot(previous_state[lane], analyzed) for lane in range(batch)]
+                    previous_defender_slots = [_slot(previous_state[lane], defender) for lane in range(batch)]
+                    dealt_events = np.asarray([
+                        float(defender_slots[lane]["percent"])
+                        > float(previous_defender_slots[lane]["percent"]) + 0.01
+                        for lane in range(batch)
+                    ]) & (~resolved)
+                    taken_events = np.asarray([
+                        float(analyzed_slots[lane]["percent"])
+                        > float(previous_analyzed_slots[lane]["percent"]) + 0.01
+                        for lane in range(batch)
+                    ]) & (~resolved)
+                    logical_dealt_events = analyzed_hit_tracker.observe(
+                        hit_event=dealt_events,
+                        move_ids=_move_ids_for_slots(analyzed_slots, action_state_tables),
+                        action_ids=np.asarray([int(slot["action_id"]) for slot in analyzed_slots]),
+                        action_frames=np.asarray([float(slot["action_frame"]) for slot in analyzed_slots]),
+                    )
+                    logical_taken_events = opponent_hit_tracker.observe(
+                        hit_event=taken_events,
+                        move_ids=_move_ids_for_slots(defender_slots, action_state_tables),
+                        action_ids=np.asarray([int(slot["action_id"]) for slot in defender_slots]),
+                        action_frames=np.asarray([float(slot["action_frame"]) for slot in defender_slots]),
+                    )
+
                     for lane_index in range(batch):
                         if resolved[lane_index]:
                             continue
@@ -706,10 +753,10 @@ def main() -> int:
                         if args.defender_takeover_mode != "fixed-delay" and actual_defender_frames[lane_index] == np.iinfo(np.int32).max:
                             phase_is_disadvantage = phase_names[lane_index] == "disadvantage"
                             observed = (
-                                taken_delta > 0
+                                bool(logical_taken_events[lane_index])
                                 if args.defender_takeover_mode == "observed-opponent-followup"
                                 or (args.defender_takeover_mode == "observed-phase-followup" and phase_is_disadvantage)
-                                else dealt_delta > 0
+                                else bool(logical_dealt_events[lane_index])
                             )
                             if observed:
                                 actual_defender_frames[lane_index] = int(next_frames[lane_index] + 1)

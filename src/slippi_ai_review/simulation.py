@@ -626,6 +626,68 @@ def _observed_followup_takeover_mask(
     )
 
 
+def _move_ids_for_slots(slots: Any, action_state_tables: dict[int, Any]) -> np.ndarray:
+    """Map visible character/action pairs to move IDs for contact grouping.
+
+    Move ID 1 is the engine's non-attack default.  Missing character tables use
+    a stable action-state fallback, which still collapses ordinary multihits
+    such as drill without conflating unrelated non-attack projectile contacts.
+    """
+    values = list(slots)
+    move_ids = np.ones(len(values), dtype=np.int32)
+    for index, slot in enumerate(values):
+        character = int(slot["char_id"])
+        action = int(slot["action_id"])
+        table = action_state_tables.get(character)
+        if table is not None and 0 <= action < len(table.move_id):
+            move_ids[index] = int(table.move_id[action])
+        else:
+            move_ids[index] = 0x10000 + action
+    return move_ids
+
+
+class _LogicalHitTracker:
+    """Count one logical contact per attacking move instance."""
+
+    def __init__(
+        self,
+        *,
+        move_ids: np.ndarray,
+        action_ids: np.ndarray,
+        action_frames: np.ndarray,
+        already_counted: np.ndarray,
+    ) -> None:
+        self._active = np.asarray(already_counted, dtype=np.bool_) & (np.asarray(move_ids) > 1)
+        self._move_ids = np.asarray(move_ids, dtype=np.int32).copy()
+        self._previous_action_ids = np.asarray(action_ids, dtype=np.int32).copy()
+        self._previous_action_frames = np.asarray(action_frames, dtype=np.float32).copy()
+
+    def observe(
+        self,
+        *,
+        hit_event: np.ndarray,
+        move_ids: np.ndarray,
+        action_ids: np.ndarray,
+        action_frames: np.ndarray,
+    ) -> np.ndarray:
+        hit_event = np.asarray(hit_event, dtype=np.bool_)
+        move_ids = np.asarray(move_ids, dtype=np.int32)
+        action_ids = np.asarray(action_ids, dtype=np.int32)
+        action_frames = np.asarray(action_frames, dtype=np.float32)
+        same_action_restarted = (
+            (action_ids == self._previous_action_ids)
+            & (action_frames + 0.001 < self._previous_action_frames)
+        )
+        self._active &= (move_ids == self._move_ids) & (~same_action_restarted)
+        logical_hit = hit_event & (~self._active)
+        trackable = logical_hit & (move_ids > 1)
+        self._active = np.where(logical_hit, trackable, self._active)
+        self._move_ids = np.where(logical_hit, move_ids, self._move_ids)
+        self._previous_action_ids = action_ids.copy()
+        self._previous_action_frames = action_frames.copy()
+        return logical_hit
+
+
 def _damage_action_ids() -> set[int]:
     return _action_set(
         prefixes=("DAMAGE_", "DEAD_", "REBIRTH", "ENTRY"),
@@ -1505,6 +1567,7 @@ def main() -> int:
     from slippi_ai import eval_lib  # type: ignore
     from slippi_ai.sim_env.observations import GameBatchBuffers  # type: ignore
     from tools.eval.validation_dtypes import INPUT_DTYPE  # type: ignore
+    from tools.slippi.action_state_tables import load_action_state_tables  # type: ignore
     from tools.slippi.validation_buffer_builder import build_validation_buffers_from_slp  # type: ignore
 
     _disable_gpus_if_needed(args.enable_gpu)
@@ -1513,6 +1576,7 @@ def main() -> int:
     timings: dict[str, Any] = {}
     phase = time.perf_counter()
     buffers = build_validation_buffers_from_slp(slp_path=str(replay))
+    action_state_tables = load_action_state_tables(str(args.msl_root.resolve() / "data"))
     timings["build_validation_buffers_s"] = time.perf_counter() - phase
 
     phase = time.perf_counter()
@@ -1755,6 +1819,18 @@ def main() -> int:
             previous_analyzed = _slot_for_source(start_gamestate, analyzed_idx)
             previous_analyzed_percent = previous_analyzed["percent"].astype(np.float32, copy=True)
             previous_analyzed_stocks = previous_analyzed["stocks"].astype(np.int16, copy=True)
+            analyzed_hit_tracker = _LogicalHitTracker(
+                move_ids=_move_ids_for_slots(previous_analyzed, action_state_tables),
+                action_ids=previous_analyzed["action_id"],
+                action_frames=previous_analyzed["action_frame"],
+                already_counted=initial_combo_constraint,
+            )
+            opponent_hit_tracker = _LogicalHitTracker(
+                move_ids=_move_ids_for_slots(previous_defender, action_state_tables),
+                action_ids=previous_defender["action_id"],
+                action_frames=previous_defender["action_frame"],
+                already_counted=initial_analyzed_constraint,
+            )
             combo_reversed = np.zeros(batch_size, dtype=np.bool_)
             defender_ko_confirmed = np.zeros(batch_size, dtype=np.bool_)
             analyzed_ko_confirmed = np.zeros(batch_size, dtype=np.bool_)
@@ -1907,6 +1983,18 @@ def main() -> int:
                     (analyzed_percent_now > previous_analyzed_percent + 0.01)
                     | analyzed_ko_event
                 )
+                logical_hit_event = analyzed_hit_tracker.observe(
+                    hit_event=hit_event,
+                    move_ids=_move_ids_for_slots(analyzed_now, action_state_tables),
+                    action_ids=analyzed_now["action_id"],
+                    action_frames=analyzed_now["action_frame"],
+                )
+                logical_attacker_damage_event = opponent_hit_tracker.observe(
+                    hit_event=attacker_damage_event,
+                    move_ids=_move_ids_for_slots(defender_now, action_state_tables),
+                    action_ids=defender_now["action_id"],
+                    action_frames=defender_now["action_frame"],
+                )
                 combo_reversed |= attacker_damage_event
                 analyzed_contact_event = hit_event | defender_ko_event
                 first_damage_dealt_step = np.where(
@@ -1932,8 +2020,8 @@ def main() -> int:
                     last_followup_step = np.where(hit_event, int(step + 1), last_followup_step)
                     combo_started |= hit_event
 
-                observed_analyzed_hit_counts += hit_event.astype(np.int16)
-                observed_opponent_hit_counts += attacker_damage_event.astype(np.int16)
+                observed_analyzed_hit_counts += logical_hit_event.astype(np.int16)
+                observed_opponent_hit_counts += logical_attacker_damage_event.astype(np.int16)
                 analyzed_followup_enabled = (
                     np.ones(batch_size, dtype=np.bool_)
                     if args.defender_takeover_mode == "observed-followup"
@@ -1950,7 +2038,7 @@ def main() -> int:
                 )
                 if bool(np.any(analyzed_followup_enabled)):
                     observed_followup = _observed_followup_takeover_mask(
-                        hit_event=hit_event & analyzed_followup_enabled,
+                        hit_event=logical_hit_event & analyzed_followup_enabled,
                         observed_hit_counts=observed_analyzed_hit_counts,
                         takeover_steps=defender_takeover_steps,
                         step=step,
@@ -1964,7 +2052,7 @@ def main() -> int:
                         ].astype(np.int32)
                 if bool(np.any(opponent_followup_enabled)):
                     observed_opponent_followup = _observed_followup_takeover_mask(
-                        hit_event=attacker_damage_event & opponent_followup_enabled,
+                        hit_event=logical_attacker_damage_event & opponent_followup_enabled,
                         observed_hit_counts=observed_opponent_hit_counts,
                         takeover_steps=defender_takeover_steps,
                         step=step,

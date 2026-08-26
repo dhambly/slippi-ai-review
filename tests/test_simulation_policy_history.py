@@ -140,3 +140,70 @@ def test_observed_followup_does_not_move_an_earlier_takeover() -> None:
     )
 
     np.testing.assert_array_equal(actual, np.asarray([False]))
+
+
+def test_multihit_contacts_from_one_move_instance_count_once() -> None:
+    tracker = simulation._LogicalHitTracker(
+        move_ids=np.asarray([17]),
+        action_ids=np.asarray([69]),
+        action_frames=np.asarray([5.0]),
+        already_counted=np.asarray([True]),
+    )
+
+    second_drill_hit = tracker.observe(
+        hit_event=np.asarray([True]),
+        move_ids=np.asarray([17]),
+        action_ids=np.asarray([69]),
+        action_frames=np.asarray([9.0]),
+    )
+    third_drill_hit = tracker.observe(
+        hit_event=np.asarray([True]),
+        move_ids=np.asarray([17]),
+        action_ids=np.asarray([69]),
+        action_frames=np.asarray([13.0]),
+    )
+
+    np.testing.assert_array_equal(second_drill_hit, np.asarray([False]))
+    np.testing.assert_array_equal(third_drill_hit, np.asarray([False]))
+
+
+def test_first_contact_from_next_move_triggers_logical_followup() -> None:
+    tracker = simulation._LogicalHitTracker(
+        move_ids=np.asarray([13]),
+        action_ids=np.asarray([65]),
+        action_frames=np.asarray([5.0]),
+        already_counted=np.asarray([True]),
+    )
+    tracker.observe(
+        hit_event=np.asarray([False]),
+        move_ids=np.asarray([1]),
+        action_ids=np.asarray([14]),
+        action_frames=np.asarray([1.0]),
+    )
+
+    next_move_hit = tracker.observe(
+        hit_event=np.asarray([True]),
+        move_ids=np.asarray([17]),
+        action_ids=np.asarray([69]),
+        action_frames=np.asarray([4.0]),
+    )
+
+    np.testing.assert_array_equal(next_move_hit, np.asarray([True]))
+
+
+def test_same_action_state_frame_reset_starts_a_new_move_instance() -> None:
+    tracker = simulation._LogicalHitTracker(
+        move_ids=np.asarray([18]),
+        action_ids=np.asarray([341]),
+        action_frames=np.asarray([12.0]),
+        already_counted=np.asarray([True]),
+    )
+
+    repeated_move_hit = tracker.observe(
+        hit_event=np.asarray([True]),
+        move_ids=np.asarray([18]),
+        action_ids=np.asarray([341]),
+        action_frames=np.asarray([1.0]),
+    )
+
+    np.testing.assert_array_equal(repeated_move_hit, np.asarray([True]))
